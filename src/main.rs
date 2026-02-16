@@ -1,15 +1,18 @@
 mod cli;
+mod db;
 mod error;
 mod logger;
 mod paths;
+mod projects;
 mod workd;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
 
-use crate::cli::{Cli, Command, DaemonCommand};
+use crate::cli::{Cli, Command, DaemonCommand, ProjectsCommand};
 use crate::error::CliError;
 use crate::logger::get_logger;
+use crate::projects as projects_command;
 use crate::workd::Workd;
 
 #[tokio::main(flavor = "current_thread")]
@@ -70,6 +73,12 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 println!("{}", paths::socket_path(args.socket).display());
             }
         },
+        Command::Projects { command } => {
+            projects_command::execute(command)?;
+        }
+        Command::Ls(args) => {
+            projects_command::execute(ProjectsCommand::List(args))?;
+        }
     }
 
     Ok(())

@@ -48,6 +48,13 @@ pub fn exit_code(_: &CliError) -> i32 {
     1
 }
 
+pub fn print_success(message: &str) {
+    let mut stderr = anstream::stderr();
+    let green =
+        anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)));
+    let _ = writeln!(stderr, "{green}\u{2714}{green:#} {message}");
+}
+
 pub fn print_error(error: &CliError, verbose: bool) {
     let mut stderr = anstream::stderr();
     let red = anstyle::Style::new()

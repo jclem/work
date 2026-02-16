@@ -8,6 +8,7 @@ use axum::{Router, response::IntoResponse};
 use rusqlite::Connection;
 use tokio::net::UnixListener;
 
+use crate::db;
 use crate::error::CliError;
 use crate::logger::Logger;
 use crate::paths;
@@ -35,12 +36,7 @@ impl Workd {
         ensure_parent_dir(&database_path)?;
         ensure_parent_dir(&socket_path)?;
 
-        let sql = Connection::open(&database_path).map_err(|source| {
-            CliError::with_source(
-                format!("failed to open {}", database_path.display()),
-                source,
-            )
-        })?;
+        let sql = db::open_database()?;
 
         Ok(Self {
             sql,
@@ -56,37 +52,7 @@ impl Workd {
     }
 
     fn prepare_database(&self) -> Result<(), CliError> {
-        self.log_timed("prepareDatabase", || {
-            self.sql
-                .execute_batch(
-                    r#"
-                CREATE TABLE IF NOT EXISTS projects (
-                  id INTEGER PRIMARY KEY,
-                  name TEXT NOT NULL UNIQUE,
-                  path TEXT NOT NULL UNIQUE,
-                  createdAt INTEGER NOT NULL,
-                  updatedAt INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS tasks (
-                  id INTEGER PRIMARY KEY,
-                  projectId INTEGER NOT NULL,
-                  name TEXT NOT NULL,
-                  path TEXT NOT NULL,
-                  createdAt INTEGER NOT NULL,
-                  updatedAt INTEGER NOT NULL,
-                  FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
-                  UNIQUE (projectId, name),
-                  UNIQUE (projectId, path)
-                );
-                "#,
-                )
-                .map_err(|source| {
-                    CliError::with_source("failed to prepare database schema", source)
-                })?;
-
-            Ok(())
-        })
+        self.log_timed("prepareDatabase", || db::prepare_schema(&self.sql))
     }
 
     async fn start_http_listener(&self) -> Result<(), CliError> {

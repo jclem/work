@@ -34,6 +34,40 @@ Print the resolved daemon socket path (for scripting):
 work daemon socket-path
 ```
 
+Create a project (defaults to current directory basename as name):
+
+```bash
+work projects create
+```
+
+Create a project for a specific path:
+
+```bash
+work projects create /path/to/project
+```
+
+Override the project name:
+
+```bash
+work projects create /path/to/project --name my-project
+```
+
+List projects:
+
+```bash
+work projects list
+work projects ls
+work ls
+work projects list --plain
+work projects list --json
+```
+
+Delete a project:
+
+```bash
+work projects delete my-project
+```
+
 Enable shell completions:
 
 ```bash
