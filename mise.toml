@@ -7,14 +7,14 @@ run = "cargo run -- daemon start"
 [tasks.check]
 depends = ["check:*"]
 
+[tasks.test]
+run = "cargo test"
+
 [tasks."check:fmt"]
 run = "cargo fmt --check"
 
 [tasks."check:clippy"]
 run = "cargo clippy --all-targets --all-features -- -D warnings"
-
-[tasks."check:test"]
-run = "cargo test"
 
 [tasks.fix]
 run = [
@@ -29,4 +29,4 @@ run = [
 ]
 
 [tasks.pre-commit]
-depends = ["check"]
+depends = ["check", "test"]

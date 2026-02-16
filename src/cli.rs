@@ -6,6 +6,8 @@ use clap::{Args, Parser, Subcommand};
 #[command(name = "work")]
 #[command(version)]
 #[command(about = "Work CLI")]
+#[command(long_about = None)]
+#[command(propagate_version = true)]
 #[command(subcommand_required = true)]
 pub struct Cli {
     /// Show detailed error source chains.
@@ -101,4 +103,40 @@ pub struct ProjectsDeleteArgs {
     /// Project name.
     #[arg(value_name = "PROJECT_NAME")]
     pub project_name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn cli_requires_a_subcommand() {
+        let result = Cli::try_parse_from(["work"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn projects_list_alias_ls_parses() {
+        let cli = Cli::try_parse_from(["work", "projects", "ls"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Projects {
+                command: ProjectsCommand::List(_)
+            }
+        ));
+    }
+
+    #[test]
+    fn projects_list_rejects_conflicting_output_flags() {
+        let result = Cli::try_parse_from(["work", "projects", "list", "--json", "--plain"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn top_level_ls_parses() {
+        let cli = Cli::try_parse_from(["work", "ls"]).unwrap();
+        assert!(matches!(cli.command, Command::Ls(_)));
+    }
 }
