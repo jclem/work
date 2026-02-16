@@ -34,6 +34,19 @@ Print the resolved daemon socket path (for scripting):
 work daemon socket-path
 ```
 
+Enable shell completions:
+
+```bash
+eval "$(work completions zsh)"
+```
+
+You can also generate other shells:
+
+```bash
+work completions bash
+work completions fish
+```
+
 The daemon listens for HTTP over a unix domain socket at:
 - `$XDG_RUNTIME_DIR/workd/workd.sock` when `XDG_RUNTIME_DIR` is set
 - otherwise a temp-dir fallback from the platform (for example `/tmp/workd/workd.sock`)

@@ -21,6 +21,12 @@ pub enum Command {
     /// Print the CLI version
     Version,
 
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
+
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,

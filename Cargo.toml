@@ -8,5 +8,6 @@ anstream = "0.6"
 anstyle = "1"
 axum = "0.8"
 clap = { version = "4.5", features = ["derive"] }
+clap_complete = { version = "4.5", features = ["unstable-dynamic"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal"] }
