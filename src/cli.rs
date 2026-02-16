@@ -38,9 +38,6 @@ pub enum Command {
         #[command(subcommand)]
         command: ProjectsCommand,
     },
-
-    /// Alias for `work projects list`.
-    Ls(ProjectsListArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -132,11 +129,5 @@ mod tests {
     fn projects_list_rejects_conflicting_output_flags() {
         let result = Cli::try_parse_from(["work", "projects", "list", "--json", "--plain"]);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn top_level_ls_parses() {
-        let cli = Cli::try_parse_from(["work", "ls"]).unwrap();
-        assert!(matches!(cli.command, Command::Ls(_)));
     }
 }

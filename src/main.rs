@@ -9,7 +9,7 @@ mod workd;
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
 
-use crate::cli::{Cli, Command, ProjectsCommand};
+use crate::cli::{Cli, Command};
 use crate::commands::{daemon as daemon_command, projects as projects_command};
 use crate::error::CliError;
 use crate::logger::get_logger;
@@ -69,9 +69,6 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Daemon { command } => daemon_command::execute(command, logger.clone()).await?,
         Command::Projects { command } => {
             projects_command::execute(command)?;
-        }
-        Command::Ls(args) => {
-            projects_command::execute(ProjectsCommand::List(args))?;
         }
     }
 
