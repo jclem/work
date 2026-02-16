@@ -22,5 +22,11 @@ run = [
     "cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features",
 ]
 
+[tasks."release:local"]
+run = [
+    "cargo build --release",
+    "install -m 0755 target/release/work /usr/local/bin/work",
+]
+
 [tasks.pre-commit]
 depends = ["check"]
