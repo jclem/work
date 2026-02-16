@@ -1,0 +1,26 @@
+[tools]
+rust = "stable"
+
+[tasks.dev]
+run = "cargo run -- daemon start"
+
+[tasks.check]
+depends = ["check:*"]
+
+[tasks."check:fmt"]
+run = "cargo fmt --check"
+
+[tasks."check:clippy"]
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks."check:test"]
+run = "cargo test"
+
+[tasks.fix]
+run = [
+    "cargo fmt",
+    "cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features",
+]
+
+[tasks.pre-commit]
+depends = ["check"]

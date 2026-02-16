@@ -1,0 +1,12 @@
+[package]
+name = "work"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anstream = "0.6"
+anstyle = "1"
+axum = "0.8"
+clap = { version = "4.5", features = ["derive"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal"] }
