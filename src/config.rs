@@ -10,6 +10,8 @@ use crate::paths;
 pub struct Config {
     pub projects: Option<HashMap<String, ProjectConfig>>,
     pub daemon: Option<DaemonConfig>,
+    #[serde(rename = "default-branch")]
+    pub default_branch: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -126,13 +128,18 @@ pub fn effective_default_branch(
         }
     }
 
-    // Fall back to global config.
+    // Fall back to global per-project config.
     if let Some(projects) = &global_config.projects {
         if let Some(project_cfg) = projects.get(project_name) {
             if let Some(branch) = &project_cfg.default_branch {
                 return branch.clone();
             }
         }
+    }
+
+    // Fall back to global default-branch.
+    if let Some(branch) = &global_config.default_branch {
+        return branch.clone();
     }
 
     "main".to_string()

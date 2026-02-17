@@ -102,20 +102,26 @@ The project-level file takes priority over the global config.
 ### Default branch
 
 Pool worktrees (and `work new` worktrees) branch off a configurable default
-branch. Set `default-branch` in the project's `.work/config.toml`:
+branch. Set it globally in `~/.config/work/config.toml`:
 
 ```toml
-default-branch = "develop"
+default-branch = "main"
 ```
 
-Or in the global config:
+Override per-project in the global config:
 
 ```toml
 [projects.my-large-repo]
 default-branch = "develop"
 ```
 
-If not specified, the default is `"main"`.
+Or in the project's `.work/config.toml` (highest priority):
+
+```toml
+default-branch = "develop"
+```
+
+If not specified anywhere, the default is `"main"`.
 
 ### Daemon settings
 
