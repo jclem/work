@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dryRun:
+        description: "Dry run (skip publish)"
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: macos-latest
+
+    steps:
+      - name: Guard against non-main branch
+        if: github.ref_name != 'main'
+        run: |
+          echo "::error::Release must be run from the main branch"
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Compute next version
+        id: version
+        run: |
+          CURRENT=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "${{ inputs.bump }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEXT="${MAJOR}.${MINOR}.${PATCH}"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Next version: $NEXT"
+
+      - name: Update Cargo.toml version
+        run: sed -i '' "s/^version = \"${{ steps.version.outputs.current }}\"/version = \"${{ steps.version.outputs.next }}\"/" Cargo.toml
+
+      - name: Read Rust version
+        run: echo "RUST_VERSION=$(grep '^rust' mise.toml | sed 's/.*"\(.*\)"/\1/')" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-apple-darwin
+
+      - name: Update Cargo.lock
+        run: cargo update --workspace
+
+      - name: Commit version bump and create tag
+        if: inputs.dryRun == false
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "v${{ steps.version.outputs.next }}"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin main "${{ steps.version.outputs.tag }}"
+
+      - name: Cache build artifacts
+        if: inputs.dryRun == false
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Build release binary
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Create tarball
+        run: |
+          mkdir work-aarch64-apple-darwin
+          cp target/aarch64-apple-darwin/release/work work-aarch64-apple-darwin/
+          tar czf work-aarch64-apple-darwin.tar.gz work-aarch64-apple-darwin
+
+      - name: Generate checksum
+        run: shasum -a 256 work-aarch64-apple-darwin.tar.gz > work-aarch64-apple-darwin.tar.gz.sha256
+
+      - name: Create GitHub release
+        if: inputs.dryRun == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            work-aarch64-apple-darwin.tar.gz \
+            work-aarch64-apple-darwin.tar.gz.sha256 \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes
