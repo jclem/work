@@ -97,6 +97,7 @@ pub struct DaemonSocketPathArgs {
 #[derive(Debug, Subcommand)]
 pub enum ProjectsCommand {
     /// Create a project in the local project registry.
+    #[command(alias = "new")]
     Create(ProjectsCreateArgs),
 
     /// List projects in the local project registry.
