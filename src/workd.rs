@@ -1,17 +1,28 @@
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
-use axum::routing::get;
-use axum::{Router, response::IntoResponse};
-use rusqlite::Connection;
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use axum::Router;
+use rusqlite::{Connection, params};
 use tokio::net::UnixListener;
+use tokio::sync::{Notify, Semaphore};
 
+use crate::adapters::TaskAdapter;
+use crate::adapters::worktree::GitWorktreeAdapter;
 use crate::db;
 use crate::error::CliError;
 use crate::logger::Logger;
 use crate::paths;
+
+#[derive(Clone)]
+struct AppState {
+    deletion_notify: Arc<Notify>,
+}
 
 pub struct Workd {
     sql: Connection,
@@ -65,16 +76,35 @@ impl Workd {
             )
         })?;
 
+        let pid_path = paths::pid_file_path();
+        ensure_parent_dir(&pid_path)?;
+        fs::write(&pid_path, std::process::id().to_string()).map_err(|source| {
+            CliError::with_source(format!("failed to write {}", pid_path.display()), source)
+        })?;
+
         let socket_guard = SocketCleanup {
             path: self.socket_path.clone(),
+            pid_path,
         };
 
         self.logger
             .info(format!("http listening on {}", self.socket_path.display()));
 
+        let deletion_notify = Arc::new(Notify::new());
+
+        // Spawn background deletion worker.
+        tokio::spawn(deletion_worker(
+            deletion_notify.clone(),
+            self.logger.clone(),
+        ));
+
+        let state = AppState { deletion_notify };
+
         let app = Router::new()
             .route("/", get(root))
-            .route("/healthz", get(healthz));
+            .route("/healthz", get(healthz))
+            .route("/tasks/process-deletions", post(process_deletions))
+            .with_state(state);
 
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal(self.logger.clone()))
@@ -96,18 +126,165 @@ impl Workd {
             Ok(value) => {
                 let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
                 self.logger
-                    .info(format!("{operation} ✓ ({elapsed_ms:.1}ms)"));
+                    .info(format!("{operation} \u{2713} ({elapsed_ms:.1}ms)"));
                 Ok(value)
             }
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
                 self.logger
-                    .error(format!("{operation} ✗ ({elapsed_ms:.1}ms)"));
+                    .error(format!("{operation} \u{2717} ({elapsed_ms:.1}ms)"));
                 Err(error)
             }
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Background deletion worker
+// ---------------------------------------------------------------------------
+
+struct DeletionTask {
+    id: i64,
+    name: String,
+    path: String,
+    force: bool,
+    project_path: String,
+}
+
+async fn deletion_worker(notify: Arc<Notify>, logger: Logger) {
+    let logger = logger.child("deletionWorker");
+
+    // Drain any stale "deleting" rows left from a previous run.
+    notify.notify_one();
+
+    loop {
+        notify.notified().await;
+
+        let tasks = {
+            let query_logger = logger.clone();
+            match tokio::task::spawn_blocking(move || query_deleting_tasks(&query_logger)).await {
+                Ok(Ok(tasks)) => tasks,
+                Ok(Err(e)) => {
+                    logger.error(format!("failed to query deleting tasks: {e}"));
+                    continue;
+                }
+                Err(e) => {
+                    logger.error(format!("query task panicked: {e}"));
+                    continue;
+                }
+            }
+        };
+
+        if tasks.is_empty() {
+            continue;
+        }
+
+        logger.info(format!("processing {} deletion(s)", tasks.len()));
+
+        let semaphore = Arc::new(Semaphore::new(4));
+        let mut handles = Vec::new();
+
+        for task in tasks {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let logger = logger.clone();
+
+            handles.push(tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                process_deletion(&logger, task);
+            }));
+        }
+
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+}
+
+fn query_deleting_tasks(logger: &Logger) -> Result<Vec<DeletionTask>, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.name, t.path, t.deleteForce, p.path \
+             FROM tasks t JOIN projects p ON t.projectId = p.id \
+             WHERE t.status = 'deleting'",
+        )
+        .map_err(|e| CliError::with_source("failed to prepare deletion query", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DeletionTask {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                force: row.get(3)?,
+                project_path: row.get(4)?,
+            })
+        })
+        .map_err(|e| CliError::with_source("failed to query deleting tasks", e))?;
+
+    let tasks = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError::with_source("failed to load deleting tasks", e))?;
+
+    if !tasks.is_empty() {
+        logger.info(format!("found {} task(s) pending deletion", tasks.len()));
+    }
+
+    Ok(tasks)
+}
+
+fn process_deletion(logger: &Logger, task: DeletionTask) {
+    let adapter = GitWorktreeAdapter;
+
+    if let Err(e) = adapter.remove(
+        &task.project_path,
+        &task.name,
+        Path::new(&task.path),
+        task.force,
+    ) {
+        logger.error(format!("failed to remove worktree for {}: {e}", task.name));
+        return;
+    }
+
+    match db::open_database() {
+        Ok(conn) => match conn.execute("DELETE FROM tasks WHERE id = ?1", params![task.id]) {
+            Ok(_) => logger.info(format!("deleted task {}", task.name)),
+            Err(e) => logger.error(format!(
+                "failed to remove {} from database: {e}",
+                task.name
+            )),
+        },
+        Err(e) => {
+            logger.error(format!(
+                "failed to open database for {} cleanup: {e}",
+                task.name
+            ));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP handlers
+// ---------------------------------------------------------------------------
+
+async fn root() -> impl IntoResponse {
+    "workd\n"
+}
+
+async fn healthz() -> impl IntoResponse {
+    "ok\n"
+}
+
+async fn process_deletions(State(state): State<AppState>) -> impl IntoResponse {
+    state.deletion_notify.notify_one();
+    "ok\n"
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn ensure_parent_dir(path: &Path) -> Result<(), CliError> {
     if let Some(parent) = path.parent() {
@@ -144,14 +321,6 @@ fn remove_stale_socket(socket_path: &Path) -> Result<(), CliError> {
     ))
 }
 
-async fn root() -> impl IntoResponse {
-    "workd\n"
-}
-
-async fn healthz() -> impl IntoResponse {
-    "ok\n"
-}
-
 async fn shutdown_signal(logger: Logger) {
     if tokio::signal::ctrl_c().await.is_ok() {
         logger.info("received shutdown signal");
@@ -162,10 +331,12 @@ async fn shutdown_signal(logger: Logger) {
 
 struct SocketCleanup {
     path: PathBuf,
+    pid_path: PathBuf,
 }
 
 impl Drop for SocketCleanup {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_file(&self.pid_path);
     }
 }

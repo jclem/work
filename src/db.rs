@@ -49,7 +49,26 @@ pub fn open_database() -> Result<Connection, CliError> {
 pub fn prepare_schema(connection: &Connection) -> Result<(), CliError> {
     connection
         .execute_batch(SCHEMA_SQL)
-        .map_err(|source| CliError::with_source("failed to prepare database schema", source))
+        .map_err(|source| CliError::with_source("failed to prepare database schema", source))?;
+
+    // Idempotent migrations via ALTER TABLE; ignore "duplicate column" errors.
+    for stmt in &[
+        "ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+        "ALTER TABLE tasks ADD COLUMN deleteForce INTEGER NOT NULL DEFAULT 0",
+    ] {
+        match connection.execute_batch(stmt) {
+            Ok(()) => {}
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => {
+                return Err(CliError::with_source(
+                    "failed to migrate database schema",
+                    e,
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn ensure_parent_dir(path: &Path) -> Result<(), CliError> {

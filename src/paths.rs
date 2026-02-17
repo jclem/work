@@ -3,10 +3,20 @@ use std::path::PathBuf;
 
 const APP_DIR: &str = "workd";
 const SOCKET_FILE: &str = "workd.sock";
+const PID_FILE: &str = "workd.pid";
+const LOG_FILE: &str = "workd.log";
 const DB_FILE: &str = "database.sqlite";
 
 pub fn database_path() -> PathBuf {
     data_dir().join(DB_FILE)
+}
+
+pub fn pid_file_path() -> PathBuf {
+    runtime_dir().join(PID_FILE)
+}
+
+pub fn daemon_log_path() -> PathBuf {
+    runtime_dir().join(LOG_FILE)
 }
 
 pub fn socket_path(socket_override: Option<PathBuf>) -> PathBuf {

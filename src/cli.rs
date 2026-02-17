@@ -76,8 +76,16 @@ pub enum ConfigCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DaemonCommand {
+    /// Start the daemon.
     Start(DaemonStartArgs),
+    /// Print the daemon socket path.
     SocketPath(DaemonSocketPathArgs),
+    /// Print the daemon PID.
+    Pid,
+    /// Stop the daemon.
+    Stop,
+    /// Restart the daemon.
+    Restart(DaemonRestartArgs),
 }
 
 #[derive(Debug, Args)]
@@ -85,6 +93,10 @@ pub struct DaemonStartArgs {
     /// Override the unix socket path used by the daemon.
     #[arg(long, value_name = "PATH")]
     pub socket: Option<PathBuf>,
+
+    /// Run in the foreground instead of daemonizing.
+    #[arg(long)]
+    pub attach: bool,
 }
 
 #[derive(Debug, Args)]
@@ -92,6 +104,17 @@ pub struct DaemonSocketPathArgs {
     /// Override the unix socket path to print.
     #[arg(long, value_name = "PATH")]
     pub socket: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct DaemonRestartArgs {
+    /// Override the unix socket path used by the daemon.
+    #[arg(long, value_name = "PATH")]
+    pub socket: Option<PathBuf>,
+
+    /// Run in the foreground instead of daemonizing.
+    #[arg(long)]
+    pub attach: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -146,6 +169,10 @@ pub struct NewArgs {
     /// Project to create the task in.
     #[arg(long, value_name = "NAME")]
     pub project: Option<String>,
+
+    /// Don't cd into the new worktree.
+    #[arg(long)]
+    pub no_cd: bool,
 }
 
 #[derive(Debug, Args)]

@@ -100,9 +100,15 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
         }
 
         let tmp_display = tmp_file.display();
-        shell_eval(&format!(
-            "cd \"{worktree_display}\"\n\"{tmp_display}\""
-        ));
+        if args.no_cd {
+            shell_eval(&format!("\"{tmp_display}\""));
+        } else {
+            shell_eval(&format!(
+                "cd \"{worktree_display}\"\n\"{tmp_display}\""
+            ));
+        }
+    } else if !args.no_cd {
+        shell_eval(&format!("cd \"{worktree_display}\""));
     }
 
     Ok(())
@@ -117,6 +123,7 @@ pub fn list(args: ListArgs) -> Result<(), CliError> {
             .prepare(
                 "SELECT t.name, t.path, t.createdAt, t.updatedAt, p.name \
                  FROM tasks t JOIN projects p ON t.projectId = p.id \
+                 WHERE t.status = 'active' \
                  ORDER BY p.name, t.name",
             )
             .map_err(|source| CliError::with_source("failed to prepare task query", source))?;
@@ -141,7 +148,7 @@ pub fn list(args: ListArgs) -> Result<(), CliError> {
         let mut stmt = connection
             .prepare(
                 "SELECT name, path, createdAt, updatedAt \
-                 FROM tasks WHERE projectId = ?1 ORDER BY name",
+                 FROM tasks WHERE projectId = ?1 AND status = 'active' ORDER BY name",
             )
             .map_err(|source| CliError::with_source("failed to prepare task query", source))?;
 
@@ -222,13 +229,14 @@ pub fn delete(args: DeleteArgs) -> Result<(), CliError> {
     let connection = db::open_database()?;
     db::prepare_schema(&connection)?;
 
-    let (project_id, _, project_path) = detect_project(&connection, args.project.as_deref())?;
+    let (project_id, _, _) = detect_project(&connection, args.project.as_deref())?;
 
-    let task_path: String = connection
+    // Verify the task exists and is active (not already queued for deletion).
+    connection
         .query_row(
-            "SELECT path FROM tasks WHERE projectId = ?1 AND name = ?2",
+            "SELECT path FROM tasks WHERE projectId = ?1 AND name = ?2 AND status = 'active'",
             params![project_id, args.name],
-            |row| row.get(0),
+            |row| row.get::<_, String>(0),
         )
         .map_err(|source| match source {
             rusqlite::Error::QueryReturnedNoRows => {
@@ -237,17 +245,17 @@ pub fn delete(args: DeleteArgs) -> Result<(), CliError> {
             other => CliError::with_source("failed to look up task", other),
         })?;
 
-    let adapter = GitWorktreeAdapter;
-    adapter.remove(&project_path, &args.name, Path::new(&task_path), args.force)?;
-
     connection
         .execute(
-            "DELETE FROM tasks WHERE projectId = ?1 AND name = ?2",
-            params![project_id, args.name],
+            "UPDATE tasks SET status = 'deleting', deleteForce = ?1 WHERE projectId = ?2 AND name = ?3",
+            params![args.force as i32, project_id, args.name],
         )
-        .map_err(|source| CliError::with_source("failed to delete task", source))?;
+        .map_err(|source| CliError::with_source("failed to mark task for deletion", source))?;
 
-    error::print_success("Task deleted.");
+    error::print_success("Task queued for deletion.");
+
+    crate::client::notify_daemon();
+
     Ok(())
 }
 
