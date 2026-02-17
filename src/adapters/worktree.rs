@@ -38,25 +38,29 @@ impl TaskAdapter for GitWorktreeAdapter {
         worktree_path: &Path,
         force: bool,
     ) -> Result<(), CliError> {
-        let mut args = vec!["worktree", "remove"];
-        if force {
-            args.push("--force");
+        // Remove the worktree (idempotent — skip if already gone).
+        if worktree_path.exists() {
+            let mut args = vec!["worktree", "remove"];
+            if force {
+                args.push("--force");
+            }
+
+            let output = Command::new("git")
+                .args(&args)
+                .arg(worktree_path)
+                .output()
+                .map_err(|source| CliError::with_source("failed to run git", source))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(CliError::new(format!(
+                    "git worktree remove failed: {}",
+                    stderr.trim()
+                )));
+            }
         }
 
-        let output = Command::new("git")
-            .args(&args)
-            .arg(worktree_path)
-            .output()
-            .map_err(|source| CliError::with_source("failed to run git", source))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(CliError::new(format!(
-                "git worktree remove failed: {}",
-                stderr.trim()
-            )));
-        }
-
+        // Delete the branch (idempotent — ignore "not found" errors).
         let delete_flag = if force { "-D" } else { "-d" };
         let output = Command::new("git")
             .args(["-C", project_path, "branch", delete_flag, task_name])
@@ -65,10 +69,13 @@ impl TaskAdapter for GitWorktreeAdapter {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(CliError::new(format!(
-                "git branch delete failed: {}",
-                stderr.trim()
-            )));
+            let stderr = stderr.trim();
+            if !stderr.contains("not found") {
+                return Err(CliError::new(format!(
+                    "git branch delete failed: {}",
+                    stderr
+                )));
+            }
         }
 
         Ok(())
