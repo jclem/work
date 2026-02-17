@@ -60,6 +60,18 @@ pub enum Command {
 
     /// Remove all tasks and projects.
     Nuke,
+
+    /// Manage configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Open the config file in $EDITOR.
+    Edit,
 }
 
 #[derive(Debug, Subcommand)]

@@ -2,6 +2,7 @@ mod adapters;
 mod cli;
 mod commands;
 mod completions;
+mod config;
 mod db;
 mod error;
 mod logger;
@@ -13,8 +14,8 @@ use clap_complete::CompleteEnv;
 
 use crate::cli::{Cli, Command};
 use crate::commands::{
-    daemon as daemon_command, init as init_command, projects as projects_command,
-    tasks as tasks_command,
+    config as config_command, daemon as daemon_command, init as init_command,
+    projects as projects_command, tasks as tasks_command,
 };
 use crate::error::CliError;
 use crate::logger::get_logger;
@@ -80,6 +81,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::List(args) => tasks_command::list(args)?,
         Command::Delete(args) => tasks_command::delete(args)?,
         Command::Nuke => tasks_command::nuke()?,
+        Command::Config { command } => config_command::execute(command)?,
     }
 
     Ok(())

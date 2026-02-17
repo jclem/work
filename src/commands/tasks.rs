@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::adapters::TaskAdapter;
 use crate::adapters::worktree::GitWorktreeAdapter;
 use crate::cli::{DeleteArgs, ListArgs, NewArgs};
+use crate::config;
 use crate::db;
 use crate::error::{self, CliError};
 use crate::paths;
@@ -66,17 +67,46 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
 
     let worktree_display = worktree_path.display();
     let hook_path = Path::new(&project_path).join(".work/hooks/new-after");
-    let hook_display = hook_path.display();
 
-    let is_fish = std::env::var("WORK_SHELL").ok().as_deref() == Some("fish");
-    if is_fish {
-        shell_eval(&format!(
-            "cd \"{worktree_display}\"\nif test -x \"{hook_display}\"\n    \"{hook_display}\"\nend"
-        ));
+    if hook_path.is_file() && is_executable(&hook_path) {
+        let hook_display = hook_path.display();
+        let is_fish = std::env::var("WORK_SHELL").ok().as_deref() == Some("fish");
+        if is_fish {
+            shell_eval(&format!(
+                "cd \"{worktree_display}\"\n\"{hook_display}\""
+            ));
+        } else {
+            shell_eval(&format!(
+                "cd \"{worktree_display}\"\n\"{hook_display}\""
+            ));
+        }
     } else {
-        shell_eval(&format!(
-            "cd \"{worktree_display}\"\nif [ -x \"{hook_display}\" ]; then \"{hook_display}\"; fi"
-        ));
+        let cfg = config::load()?;
+        if let Some(script) = config::hook_script(&cfg, &project_name, "new-after") {
+            let tmp_dir = std::env::temp_dir().join("work-hooks");
+            std::fs::create_dir_all(&tmp_dir).map_err(|source| {
+                CliError::with_source("failed to create temp hook directory", source)
+            })?;
+
+            let tmp_file = tmp_dir.join(format!("new-after-{}", std::process::id()));
+            std::fs::write(&tmp_file, script).map_err(|source| {
+                CliError::with_source("failed to write temp hook script", source)
+            })?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp_file, std::fs::Permissions::from_mode(0o755))
+                    .map_err(|source| {
+                        CliError::with_source("failed to chmod temp hook script", source)
+                    })?;
+            }
+
+            let tmp_display = tmp_file.display();
+            shell_eval(&format!(
+                "cd \"{worktree_display}\"\n\"{tmp_display}\""
+            ));
+        }
     }
 
     Ok(())
@@ -262,6 +292,19 @@ pub fn nuke() -> Result<(), CliError> {
         deleted_projects
     ));
     Ok(())
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    true
 }
 
 fn shell_eval(cmd: &str) {
