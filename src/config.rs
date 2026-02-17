@@ -17,6 +17,8 @@ pub struct ProjectConfig {
     pub hooks: Option<HooksConfig>,
     #[serde(rename = "pool-size")]
     pub pool_size: Option<u32>,
+    #[serde(rename = "default-branch")]
+    pub default_branch: Option<String>,
 }
 
 fn default_max_load() -> f64 {
@@ -108,6 +110,32 @@ pub fn effective_pool_size(
     }
 
     0
+}
+
+/// Returns the effective default branch for a project. Checks project-level
+/// config first, then falls back to the global config. Defaults to "main".
+pub fn effective_default_branch(
+    global_config: &Config,
+    project_name: &str,
+    project_path: &str,
+) -> String {
+    // Project-level .work/config.toml takes priority.
+    if let Ok(project_cfg) = load_project_config(project_path) {
+        if let Some(branch) = project_cfg.default_branch {
+            return branch;
+        }
+    }
+
+    // Fall back to global config.
+    if let Some(projects) = &global_config.projects {
+        if let Some(project_cfg) = projects.get(project_name) {
+            if let Some(branch) = &project_cfg.default_branch {
+                return branch.clone();
+            }
+        }
+    }
+
+    "main".to_string()
 }
 
 pub fn hook_script<'a>(config: &'a Config, project_name: &str, hook_name: &str) -> Option<&'a str> {

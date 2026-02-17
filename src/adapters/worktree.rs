@@ -57,10 +57,12 @@ impl TaskAdapter for GitWorktreeAdapter {
         project_path: &str,
         task_name: &str,
         worktree_path: &Path,
+        start_point: &str,
     ) -> Result<(), CliError> {
         let output = Command::new("git")
             .args(["-C", project_path, "worktree", "add", "-b", task_name])
             .arg(worktree_path)
+            .arg(start_point)
             .output()
             .map_err(|source| CliError::with_source("failed to run git", source))?;
 

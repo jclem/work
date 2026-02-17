@@ -53,7 +53,8 @@ regardless of whether the worktree came from the pool.
 ### How do git branches work?
 
 During pre-warming, the daemon creates a branch with a temporary name like
-`__pool-a1b2c3d4` that points at the project's current HEAD.
+`__pool-a1b2c3d4` that branches off the configured default branch (see
+[Default branch](#default-branch) below).
 
 When `work new` claims a pool entry, it renames the branch to the real task name
 (e.g. `2026-02-17-bold-fox`) using `git branch -m`. The worktree directory is
@@ -97,6 +98,24 @@ pool-size = 2
 ```
 
 The project-level file takes priority over the global config.
+
+### Default branch
+
+Pool worktrees (and `work new` worktrees) branch off a configurable default
+branch. Set `default-branch` in the project's `.work/config.toml`:
+
+```toml
+default-branch = "develop"
+```
+
+Or in the global config:
+
+```toml
+[projects.my-large-repo]
+default-branch = "develop"
+```
+
+If not specified, the default is `"main"`.
 
 ### Daemon settings
 

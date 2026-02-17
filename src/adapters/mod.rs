@@ -10,6 +10,7 @@ pub trait TaskAdapter {
         project_path: &str,
         task_name: &str,
         worktree_path: &Path,
+        start_point: &str,
     ) -> Result<(), CliError>;
 
     fn remove(

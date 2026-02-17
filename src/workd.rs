@@ -375,6 +375,9 @@ async fn replenish_pools(
             continue;
         }
 
+        let default_branch =
+            config::effective_default_branch(&global_config, &project.name, &project.path);
+
         let current_count = {
             let project_id = project.id;
             match tokio::task::spawn_blocking(move || count_pool_entries(project_id)).await {
@@ -431,10 +434,11 @@ async fn replenish_pools(
             let temp_name_clone = temp_name.clone();
             let worktree_path_clone = worktree_path.clone();
             let logger_clone = logger.clone();
+            let default_branch_clone = default_branch.clone();
 
             let result = tokio::task::spawn_blocking(move || {
                 let adapter = GitWorktreeAdapter;
-                adapter.create(&project_path, &temp_name_clone, &worktree_path_clone)?;
+                adapter.create(&project_path, &temp_name_clone, &worktree_path_clone, &default_branch_clone)?;
 
                 let conn = db::open_database()?;
                 db::prepare_schema(&conn)?;

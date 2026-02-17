@@ -51,12 +51,14 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
     let worktree_path = paths::worktree_path(&project_name, &task_name);
 
     let adapter = GitWorktreeAdapter;
+    let global_cfg = config::load()?;
+    let default_branch = config::effective_default_branch(&global_cfg, &project_name, &project_path);
 
     // Attempt to claim a pre-warmed worktree from the pool.
     let claimed = try_claim_pool(&connection, &adapter, project_id, &project_path, &task_name, &worktree_path);
 
     if !claimed {
-        adapter.create(&project_path, &task_name, &worktree_path)?;
+        adapter.create(&project_path, &task_name, &worktree_path, &default_branch)?;
     }
 
     let now = unix_timestamp_seconds()?;
@@ -76,13 +78,9 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
     let project_cfg = config::load_project_config(&project_path)?;
     let hook_script = config::project_hook_script(&project_cfg, "new-after");
 
-    let global_cfg;
     let hook_script = match hook_script {
         Some(s) => Some(s),
-        None => {
-            global_cfg = config::load()?;
-            config::hook_script(&global_cfg, &project_name, "new-after")
-        }
+        None => config::hook_script(&global_cfg, &project_name, "new-after"),
     };
 
     if let Some(script) = hook_script {
