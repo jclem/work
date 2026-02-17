@@ -34,6 +34,24 @@ fn data_dir() -> PathBuf {
     PathBuf::from(home).join(".local/share").join(APP_DIR)
 }
 
+pub fn worktree_path(project_name: &str, task_name: &str) -> PathBuf {
+    data_dir_root()
+        .join(project_name)
+        .join("worktrees")
+        .join(task_name)
+}
+
+fn data_dir_root() -> PathBuf {
+    if let Ok(path) = env::var("XDG_DATA_HOME")
+        && !path.is_empty()
+    {
+        return PathBuf::from(path).join("work");
+    }
+
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".local/share").join("work")
+}
+
 fn runtime_dir() -> PathBuf {
     if let Ok(path) = env::var("XDG_RUNTIME_DIR")
         && !path.is_empty()

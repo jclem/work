@@ -10,6 +10,14 @@ pub struct CliError {
 }
 
 impl CliError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            hint: None,
+            source: None,
+        }
+    }
+
     pub fn with_hint(message: impl Into<String>, hint: impl Into<String>) -> Self {
         Self {
             message: message.into(),

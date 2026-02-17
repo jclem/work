@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::completions;
+
 #[derive(Debug, Parser)]
 #[command(name = "work")]
 #[command(version)]
@@ -38,6 +40,17 @@ pub enum Command {
         #[command(subcommand)]
         command: ProjectsCommand,
     },
+
+    /// Create a new task in the current project.
+    New(NewArgs),
+
+    /// List tasks.
+    #[command(alias = "ls")]
+    List(ListArgs),
+
+    /// Delete a task.
+    #[command(alias = "rm")]
+    Delete(DeleteArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -102,6 +115,51 @@ pub struct ProjectsDeleteArgs {
     pub project_name: String,
 }
 
+#[derive(Debug, Args)]
+pub struct NewArgs {
+    /// Task name. Generated if omitted.
+    #[arg(value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Project to create the task in.
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ListArgs {
+    /// Output as JSON.
+    #[arg(long, conflicts_with = "plain")]
+    pub json: bool,
+
+    /// Output as tab-separated values with no headers.
+    #[arg(long, conflicts_with = "json")]
+    pub plain: bool,
+
+    /// List tasks across all projects.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Project to list tasks for.
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct DeleteArgs {
+    /// Task name.
+    #[arg(value_name = "NAME", add = completions::task_name_completer())]
+    pub name: String,
+
+    /// Project the task belongs to.
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+
+    /// Force removal even if the worktree has changes.
+    #[arg(long)]
+    pub force: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -128,6 +186,53 @@ mod tests {
     #[test]
     fn projects_list_rejects_conflicting_output_flags() {
         let result = Cli::try_parse_from(["work", "projects", "list", "--json", "--plain"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_parses_without_name() {
+        let cli = Cli::try_parse_from(["work", "new"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::New(NewArgs { name: None, .. })
+        ));
+    }
+
+    #[test]
+    fn new_parses_with_name() {
+        let cli = Cli::try_parse_from(["work", "new", "my-task"]).unwrap();
+        if let Command::New(args) = cli.command {
+            assert_eq!(args.name.as_deref(), Some("my-task"));
+        } else {
+            panic!("expected Command::New");
+        }
+    }
+
+    #[test]
+    fn list_alias_ls_parses() {
+        let cli = Cli::try_parse_from(["work", "ls"]).unwrap();
+        assert!(matches!(cli.command, Command::List(_)));
+    }
+
+    #[test]
+    fn list_rejects_conflicting_output_flags() {
+        let result = Cli::try_parse_from(["work", "list", "--json", "--plain"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn delete_alias_rm_parses() {
+        let cli = Cli::try_parse_from(["work", "rm", "my-task"]).unwrap();
+        if let Command::Delete(args) = cli.command {
+            assert_eq!(args.name, "my-task");
+        } else {
+            panic!("expected Command::Delete");
+        }
+    }
+
+    #[test]
+    fn delete_requires_name() {
+        let result = Cli::try_parse_from(["work", "delete"]);
         assert!(result.is_err());
     }
 }
