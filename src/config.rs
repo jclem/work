@@ -9,11 +9,36 @@ use crate::paths;
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     pub projects: Option<HashMap<String, ProjectConfig>>,
+    pub daemon: Option<DaemonConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ProjectConfig {
     pub hooks: Option<HooksConfig>,
+    #[serde(rename = "pool-size")]
+    pub pool_size: Option<u32>,
+}
+
+fn default_max_load() -> f64 {
+    0.7
+}
+
+fn default_min_memory() -> f64 {
+    10.0
+}
+
+fn default_check_interval() -> u64 {
+    30
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DaemonConfig {
+    #[serde(rename = "pool-max-load", default = "default_max_load")]
+    pub pool_max_load: f64,
+    #[serde(rename = "pool-min-memory-pct", default = "default_min_memory")]
+    pub pool_min_memory_pct: f64,
+    #[serde(rename = "pool-check-interval", default = "default_check_interval")]
+    pub pool_check_interval: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +83,33 @@ pub fn load_project_config(project_path: &str) -> Result<ProjectConfig, CliError
     Ok(config)
 }
 
+/// Returns the effective pool size for a project. Checks project-level config
+/// first, then falls back to the global config. Returns 0 (no pre-warming) if
+/// neither specifies a pool size.
+pub fn effective_pool_size(
+    global_config: &Config,
+    project_name: &str,
+    project_path: &str,
+) -> u32 {
+    // Project-level .work/config.toml takes priority.
+    if let Ok(project_cfg) = load_project_config(project_path) {
+        if let Some(size) = project_cfg.pool_size {
+            return size;
+        }
+    }
+
+    // Fall back to global config.
+    if let Some(projects) = &global_config.projects {
+        if let Some(project_cfg) = projects.get(project_name) {
+            if let Some(size) = project_cfg.pool_size {
+                return size;
+            }
+        }
+    }
+
+    0
+}
+
 pub fn hook_script<'a>(config: &'a Config, project_name: &str, hook_name: &str) -> Option<&'a str> {
     let projects = config.projects.as_ref()?;
     let project = projects.get(project_name)?;
@@ -98,8 +150,10 @@ mod tests {
                     hooks: Some(HooksConfig {
                         new_after: Some("echo hello".to_string()),
                     }),
+                    ..ProjectConfig::default()
                 },
             )])),
+            ..Config::default()
         };
         assert_eq!(
             hook_script(&config, "my-project", "new-after"),
@@ -116,8 +170,10 @@ mod tests {
                     hooks: Some(HooksConfig {
                         new_after: Some("echo hello".to_string()),
                     }),
+                    ..ProjectConfig::default()
                 },
             )])),
+            ..Config::default()
         };
         assert!(hook_script(&config, "my-project", "unknown-hook").is_none());
     }
@@ -142,6 +198,7 @@ echo "hello"
             hooks: Some(HooksConfig {
                 new_after: Some("echo project".to_string()),
             }),
+            ..ProjectConfig::default()
         };
         assert_eq!(project_hook_script(&project, "new-after"), Some("echo project"));
     }

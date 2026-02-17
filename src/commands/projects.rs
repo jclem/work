@@ -1,9 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
 use serde::Serialize;
 
+use crate::adapters::TaskAdapter;
+use crate::adapters::worktree::GitWorktreeAdapter;
 use crate::cli::{ProjectsCommand, ProjectsCreateArgs, ProjectsDeleteArgs, ProjectsListArgs};
 use crate::db;
 use crate::error::{self, CliError};
@@ -103,6 +105,46 @@ fn list_projects(args: ProjectsListArgs) -> Result<(), CliError> {
 fn delete_project(args: ProjectsDeleteArgs) -> Result<(), CliError> {
     let connection = db::open_database()?;
     db::prepare_schema(&connection)?;
+
+    // Look up the project to get its ID for pool cleanup.
+    let project_id: Option<i64> = connection
+        .query_row(
+            "SELECT id FROM projects WHERE name = ?1",
+            params![args.project_name],
+            |row| row.get(0),
+        )
+        .ok();
+
+    // Clean up pool worktrees before deleting the project row.
+    if let Some(project_id) = project_id {
+        let mut pool_stmt = connection
+            .prepare(
+                "SELECT po.tempName, po.path, p.path \
+                 FROM pool po JOIN projects p ON po.projectId = p.id \
+                 WHERE po.projectId = ?1",
+            )
+            .map_err(|source| CliError::with_source("failed to query pool entries", source))?;
+
+        let pool_entries: Vec<(String, String, String)> = pool_stmt
+            .query_map(params![project_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|source| CliError::with_source("failed to query pool entries", source))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| CliError::with_source("failed to load pool entries", source))?;
+
+        let adapter = GitWorktreeAdapter;
+        for (temp_name, pool_path, project_path) in &pool_entries {
+            let _ = adapter.remove(project_path, temp_name, Path::new(pool_path), true);
+        }
+
+        connection
+            .execute(
+                "DELETE FROM pool WHERE projectId = ?1",
+                params![project_id],
+            )
+            .map_err(|source| CliError::with_source("failed to delete pool entries", source))?;
+    }
 
     let deleted_rows = connection
         .execute(

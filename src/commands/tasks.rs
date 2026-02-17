@@ -51,7 +51,13 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
     let worktree_path = paths::worktree_path(&project_name, &task_name);
 
     let adapter = GitWorktreeAdapter;
-    adapter.create(&project_path, &task_name, &worktree_path)?;
+
+    // Attempt to claim a pre-warmed worktree from the pool.
+    let claimed = try_claim_pool(&connection, &adapter, project_id, &project_path, &task_name, &worktree_path);
+
+    if !claimed {
+        adapter.create(&project_path, &task_name, &worktree_path)?;
+    }
 
     let now = unix_timestamp_seconds()?;
     let worktree_path_str = worktree_path.to_string_lossy().to_string();
@@ -265,6 +271,29 @@ pub fn nuke() -> Result<(), CliError> {
 
     let adapter = GitWorktreeAdapter;
 
+    // Remove pool worktrees first.
+    let mut pool_stmt = connection
+        .prepare(
+            "SELECT po.tempName, po.path, p.path \
+             FROM pool po JOIN projects p ON po.projectId = p.id",
+        )
+        .map_err(|source| CliError::with_source("failed to query pool entries", source))?;
+
+    let pool_entries: Vec<(String, String, String)> = pool_stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|source| CliError::with_source("failed to query pool entries", source))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| CliError::with_source("failed to load pool entries", source))?;
+
+    for (temp_name, pool_path, project_path) in &pool_entries {
+        let _ = adapter.remove(project_path, temp_name, Path::new(pool_path), true);
+    }
+
+    connection
+        .execute("DELETE FROM pool", [])
+        .map_err(|source| CliError::with_source("failed to delete pool entries", source))?;
+
+    // Remove task worktrees.
     let mut stmt = connection
         .prepare(
             "SELECT t.name, t.path, p.path \
@@ -291,11 +320,50 @@ pub fn nuke() -> Result<(), CliError> {
         .map_err(|source| CliError::with_source("failed to delete projects", source))?;
 
     error::print_success(&format!(
-        "Removed {} task(s) and {} project(s).",
+        "Removed {} task(s), {} pool worktree(s), and {} project(s).",
         tasks.len(),
+        pool_entries.len(),
         deleted_projects
     ));
     Ok(())
+}
+
+fn try_claim_pool(
+    connection: &rusqlite::Connection,
+    adapter: &GitWorktreeAdapter,
+    project_id: i64,
+    project_path: &str,
+    task_name: &str,
+    worktree_path: &std::path::PathBuf,
+) -> bool {
+    // Atomically select-and-delete the oldest pool entry for this project.
+    let result: Result<(i64, String, String), _> = connection.query_row(
+        "DELETE FROM pool WHERE id = (
+            SELECT id FROM pool WHERE projectId = ?1 ORDER BY createdAt ASC LIMIT 1
+        ) RETURNING id, tempName, path",
+        params![project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    );
+
+    match result {
+        Ok((_pool_id, temp_name, old_path_str)) => {
+            let old_path = std::path::Path::new(&old_path_str);
+
+            match adapter.claim_pooled(project_path, &temp_name, task_name, old_path, worktree_path) {
+                Ok(()) => {
+                    // Trigger pool replenishment in background.
+                    crate::client::notify_pool_replenish();
+                    true
+                }
+                Err(e) => {
+                    eprintln!("pool claim failed ({e}), falling back to normal creation");
+                    false
+                }
+            }
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => false,
+        Err(_) => false,
+    }
 }
 
 fn shell_eval(cmd: &str) {

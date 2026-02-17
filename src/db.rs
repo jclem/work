@@ -26,6 +26,16 @@ CREATE TABLE IF NOT EXISTS tasks (
   UNIQUE (projectId, name),
   UNIQUE (projectId, path)
 );
+
+CREATE TABLE IF NOT EXISTS pool (
+  id INTEGER PRIMARY KEY,
+  projectId INTEGER NOT NULL,
+  tempName TEXT NOT NULL,
+  path TEXT NOT NULL,
+  createdAt INTEGER NOT NULL,
+  FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+  UNIQUE (projectId, tempName)
+);
 "#;
 
 pub fn open_database() -> Result<Connection, CliError> {

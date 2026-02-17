@@ -11,6 +11,13 @@ pub fn notify_daemon() {
     let _ = send_post(&socket_path, "/tasks/process-deletions");
 }
 
+/// Fire-and-forget notification to the daemon to replenish the pool.
+/// Silently ignores errors (daemon may not be running).
+pub fn notify_pool_replenish() {
+    let socket_path = paths::socket_path(None);
+    let _ = send_post(&socket_path, "/pool/replenish");
+}
+
 fn send_post(socket_path: &std::path::Path, path: &str) -> std::io::Result<()> {
     let mut stream = UnixStream::connect(socket_path)?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;

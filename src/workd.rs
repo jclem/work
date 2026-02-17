@@ -12,8 +12,11 @@ use rusqlite::{Connection, params};
 use tokio::net::UnixListener;
 use tokio::sync::{watch, Notify, Semaphore};
 
+use sysinfo::System;
+
 use crate::adapters::TaskAdapter;
 use crate::adapters::worktree::GitWorktreeAdapter;
+use crate::config;
 use crate::db;
 use crate::error::CliError;
 use crate::logger::Logger;
@@ -22,6 +25,7 @@ use crate::paths;
 #[derive(Clone)]
 struct AppState {
     deletion_notify: Arc<Notify>,
+    pool_notify: Arc<Notify>,
 }
 
 pub struct Workd {
@@ -91,21 +95,33 @@ impl Workd {
             .info(format!("http listening on {}", self.socket_path.display()));
 
         let deletion_notify = Arc::new(Notify::new());
+        let pool_notify = Arc::new(Notify::new());
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         // Spawn background deletion worker.
-        let worker_handle = tokio::spawn(deletion_worker(
+        let deletion_handle = tokio::spawn(deletion_worker(
             deletion_notify.clone(),
+            shutdown_rx.clone(),
+            self.logger.clone(),
+        ));
+
+        // Spawn background pool worker.
+        let pool_handle = tokio::spawn(pool_worker(
+            pool_notify.clone(),
             shutdown_rx,
             self.logger.clone(),
         ));
 
-        let state = AppState { deletion_notify };
+        let state = AppState {
+            deletion_notify,
+            pool_notify,
+        };
 
         let app = Router::new()
             .route("/", get(root))
             .route("/healthz", get(healthz))
             .route("/tasks/process-deletions", post(process_deletions))
+            .route("/pool/replenish", post(pool_replenish))
             .with_state(state);
 
         axum::serve(listener, app)
@@ -114,11 +130,13 @@ impl Workd {
             .map_err(|source| CliError::with_source("http listener exited unexpectedly", source))?;
 
         self.logger
-            .info("waiting for in-flight deletions to finish (signal again to force quit)");
+            .info("waiting for in-flight work to finish (signal again to force quit)");
         let _ = shutdown_tx.send(true);
 
         tokio::select! {
-            _ = worker_handle => {}
+            _ = async {
+                let _ = tokio::join!(deletion_handle, pool_handle);
+            } => {}
             _ = force_shutdown_signal(self.logger.clone()) => {
                 self.logger.info("forced shutdown");
             }
@@ -291,6 +309,264 @@ fn process_deletion(logger: &Logger, task: DeletionTask) {
 }
 
 // ---------------------------------------------------------------------------
+// Background pool worker
+// ---------------------------------------------------------------------------
+
+struct PoolProject {
+    id: i64,
+    name: String,
+    path: String,
+}
+
+async fn pool_worker(notify: Arc<Notify>, mut shutdown: watch::Receiver<bool>, logger: Logger) {
+    let logger = logger.child("poolWorker");
+
+    // Fill any deficit on startup.
+    notify.notify_one();
+
+    loop {
+        tokio::select! {
+            _ = notify.notified() => {}
+            _ = shutdown.changed() => {
+                logger.info("shutdown received");
+                break;
+            }
+        }
+
+        if let Err(e) = replenish_pools(&logger, &mut shutdown).await {
+            logger.error(format!("pool replenishment failed: {e}"));
+        }
+    }
+}
+
+async fn replenish_pools(
+    logger: &Logger,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), CliError> {
+    let global_config = config::load()?;
+
+    let daemon_cfg = global_config.daemon.as_ref();
+    let max_load_frac = daemon_cfg.map_or(0.7, |d| d.pool_max_load);
+    let min_memory_pct = daemon_cfg.map_or(10.0, |d| d.pool_min_memory_pct);
+    let check_interval_secs = daemon_cfg.map_or(30, |d| d.pool_check_interval);
+
+    let projects = {
+        let query_logger = logger.clone();
+        match tokio::task::spawn_blocking(move || query_all_projects(&query_logger)).await {
+            Ok(Ok(projects)) => projects,
+            Ok(Err(e)) => return Err(e),
+            Err(e) => {
+                return Err(CliError::new(format!("query projects task panicked: {e}")));
+            }
+        }
+    };
+
+    for project in &projects {
+        let pool_size =
+            config::effective_pool_size(&global_config, &project.name, &project.path);
+
+        if pool_size == 0 {
+            continue;
+        }
+
+        let current_count = {
+            let project_id = project.id;
+            match tokio::task::spawn_blocking(move || count_pool_entries(project_id)).await {
+                Ok(Ok(count)) => count,
+                Ok(Err(e)) => {
+                    logger.error(format!(
+                        "failed to count pool entries for {}: {e}",
+                        project.name
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    logger.error(format!("count pool task panicked for {}: {e}", project.name));
+                    continue;
+                }
+            }
+        };
+
+        let deficit = pool_size.saturating_sub(current_count);
+
+        if deficit == 0 {
+            continue;
+        }
+
+        logger.info(format!(
+            "project {}: pool {current_count}/{pool_size}, creating {deficit} worktree(s)",
+            project.name
+        ));
+
+        for _ in 0..deficit {
+            // Check for shutdown before each creation.
+            if *shutdown.borrow() {
+                logger.info("shutdown during pool replenishment, stopping");
+                return Ok(());
+            }
+
+            // Resource gating: wait until system resources are available.
+            loop {
+                let (load_ok, mem_ok) = check_system_resources(max_load_frac, min_memory_pct);
+
+                if load_ok && mem_ok {
+                    break;
+                }
+
+                if !load_ok {
+                    logger.info("backing off: system load too high");
+                }
+                if !mem_ok {
+                    logger.info("backing off: available memory too low");
+                }
+
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(check_interval_secs)) => {}
+                    _ = shutdown.changed() => {
+                        logger.info("shutdown during resource wait, stopping");
+                        return Ok(());
+                    }
+                }
+            }
+
+            let temp_name = generate_pool_temp_name();
+            let worktree_path = paths::worktree_path(&project.name, &temp_name);
+            let project_path = project.path.clone();
+            let project_id = project.id;
+            let project_name = project.name.clone();
+            let temp_name_clone = temp_name.clone();
+            let worktree_path_clone = worktree_path.clone();
+            let logger_clone = logger.clone();
+
+            let result = tokio::task::spawn_blocking(move || {
+                let adapter = GitWorktreeAdapter;
+                adapter.create(&project_path, &temp_name_clone, &worktree_path_clone)?;
+
+                let conn = db::open_database()?;
+                db::prepare_schema(&conn)?;
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| CliError::with_source("system clock error", e))?
+                    .as_secs() as i64;
+
+                let wt_str = worktree_path_clone.to_string_lossy().to_string();
+                match conn.execute(
+                    "INSERT INTO pool (projectId, tempName, path, createdAt) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![project_id, temp_name_clone, wt_str, now],
+                ) {
+                    Ok(_) => {
+                        logger_clone.info(format!(
+                            "created pool worktree {temp_name_clone} for {project_name}"
+                        ));
+                        Ok(())
+                    }
+                    Err(e) => {
+                        // DB insert failed — clean up the worktree we just created.
+                        logger_clone.error(format!(
+                            "failed to insert pool entry {temp_name_clone}: {e}, cleaning up worktree"
+                        ));
+                        let _ = adapter.remove(
+                            &project_name,
+                            &temp_name_clone,
+                            &worktree_path_clone,
+                            true,
+                        );
+                        Err(CliError::with_source("failed to insert pool entry", e))
+                    }
+                }
+            })
+            .await;
+
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    logger.error(format!("pool creation failed for {}: {e}", project.name));
+                }
+                Err(e) => {
+                    logger.error(format!("pool creation task panicked for {}: {e}", project.name));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn query_all_projects(logger: &Logger) -> Result<Vec<PoolProject>, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let mut stmt = conn
+        .prepare("SELECT id, name, path FROM projects")
+        .map_err(|e| CliError::with_source("failed to prepare project query", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(PoolProject {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+            })
+        })
+        .map_err(|e| CliError::with_source("failed to query projects", e))?;
+
+    let projects = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError::with_source("failed to load projects", e))?;
+
+    logger.info(format!("found {} project(s) to check", projects.len()));
+    Ok(projects)
+}
+
+fn count_pool_entries(project_id: i64) -> Result<u32, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let count: u32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pool WHERE projectId = ?1",
+            rusqlite::params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| CliError::with_source("failed to count pool entries", e))?;
+
+    Ok(count)
+}
+
+fn check_system_resources(max_load_frac: f64, min_memory_pct: f64) -> (bool, bool) {
+    let load_avg = System::load_average();
+    let num_cpus = {
+        let mut sys = System::new();
+        sys.refresh_cpu_list(sysinfo::CpuRefreshKind::default());
+        let count = sys.cpus().len();
+        if count > 0 { count as f64 } else { 1.0 }
+    };
+    let load_threshold = max_load_frac * num_cpus;
+    let load_ok = load_avg.one <= load_threshold;
+
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let total_mem = sys.total_memory();
+    let available_mem = sys.available_memory();
+    let mem_ok = if total_mem > 0 {
+        let available_pct = (available_mem as f64 / total_mem as f64) * 100.0;
+        available_pct >= min_memory_pct
+    } else {
+        true // Can't determine memory, don't gate.
+    };
+
+    (load_ok, mem_ok)
+}
+
+fn generate_pool_temp_name() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let hex: u32 = rng.r#gen();
+    format!("__pool-{hex:08x}")
+}
+
+// ---------------------------------------------------------------------------
 // HTTP handlers
 // ---------------------------------------------------------------------------
 
@@ -304,6 +580,11 @@ async fn healthz() -> impl IntoResponse {
 
 async fn process_deletions(State(state): State<AppState>) -> impl IntoResponse {
     state.deletion_notify.notify_one();
+    "ok\n"
+}
+
+async fn pool_replenish(State(state): State<AppState>) -> impl IntoResponse {
+    state.pool_notify.notify_one();
     "ok\n"
 }
 

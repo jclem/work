@@ -7,6 +7,50 @@ use super::TaskAdapter;
 
 pub struct GitWorktreeAdapter;
 
+impl GitWorktreeAdapter {
+    /// Claim a pre-warmed pool worktree by renaming the branch and moving the worktree.
+    pub fn claim_pooled(
+        &self,
+        project_path: &str,
+        temp_name: &str,
+        task_name: &str,
+        old_path: &Path,
+        new_path: &Path,
+    ) -> Result<(), CliError> {
+        // 1. Rename the branch: git -C <project> branch -m <temp_name> <task_name>
+        let output = Command::new("git")
+            .args(["-C", project_path, "branch", "-m", temp_name, task_name])
+            .output()
+            .map_err(|source| CliError::with_source("failed to run git", source))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(CliError::new(format!(
+                "git branch rename failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        // 2. Move the worktree: git -C <project> worktree move <old_path> <new_path>
+        let output = Command::new("git")
+            .args(["-C", project_path, "worktree", "move"])
+            .arg(old_path)
+            .arg(new_path)
+            .output()
+            .map_err(|source| CliError::with_source("failed to run git", source))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(CliError::new(format!(
+                "git worktree move failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        Ok(())
+    }
+}
+
 impl TaskAdapter for GitWorktreeAdapter {
     fn create(
         &self,
