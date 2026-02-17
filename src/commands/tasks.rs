@@ -52,10 +52,18 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
 
     let adapter = GitWorktreeAdapter;
     let global_cfg = config::load()?;
-    let default_branch = config::effective_default_branch(&global_cfg, &project_name, &project_path);
+    let default_branch =
+        config::effective_default_branch(&global_cfg, &project_name, &project_path);
 
     // Attempt to claim a pre-warmed worktree from the pool.
-    let claimed = try_claim_pool(&connection, &adapter, project_id, &project_path, &task_name, &worktree_path);
+    let claimed = try_claim_pool(
+        &connection,
+        &adapter,
+        project_id,
+        &project_path,
+        &task_name,
+        &worktree_path,
+    );
 
     if !claimed {
         adapter.create(&project_path, &task_name, &worktree_path, &default_branch)?;
@@ -90,26 +98,22 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
         })?;
 
         let tmp_file = tmp_dir.join(format!("new-after-{}", std::process::id()));
-        std::fs::write(&tmp_file, script).map_err(|source| {
-            CliError::with_source("failed to write temp hook script", source)
-        })?;
+        std::fs::write(&tmp_file, script)
+            .map_err(|source| CliError::with_source("failed to write temp hook script", source))?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp_file, std::fs::Permissions::from_mode(0o755))
-                .map_err(|source| {
-                    CliError::with_source("failed to chmod temp hook script", source)
-                })?;
+            std::fs::set_permissions(&tmp_file, std::fs::Permissions::from_mode(0o755)).map_err(
+                |source| CliError::with_source("failed to chmod temp hook script", source),
+            )?;
         }
 
         let tmp_display = tmp_file.display();
         if args.no_cd {
             shell_eval(&format!("\"{tmp_display}\""));
         } else {
-            shell_eval(&format!(
-                "cd \"{worktree_display}\"\n\"{tmp_display}\""
-            ));
+            shell_eval(&format!("cd \"{worktree_display}\"\n\"{tmp_display}\""));
         }
     } else if !args.no_cd {
         shell_eval(&format!("cd \"{worktree_display}\""));
@@ -347,7 +351,8 @@ fn try_claim_pool(
         Ok((_pool_id, temp_name, old_path_str)) => {
             let old_path = std::path::Path::new(&old_path_str);
 
-            match adapter.claim_pooled(project_path, &temp_name, task_name, old_path, worktree_path) {
+            match adapter.claim_pooled(project_path, &temp_name, task_name, old_path, worktree_path)
+            {
                 Ok(()) => {
                     // Trigger pool replenishment in background.
                     crate::client::notify_pool_replenish();

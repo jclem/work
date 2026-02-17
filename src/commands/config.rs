@@ -21,7 +21,10 @@ fn edit() -> Result<(), CliError> {
     let config_dir = paths::config_dir();
     std::fs::create_dir_all(&config_dir).map_err(|source| {
         CliError::with_source(
-            format!("failed to create config directory: {}", config_dir.display()),
+            format!(
+                "failed to create config directory: {}",
+                config_dir.display()
+            ),
             source,
         )
     })?;

@@ -59,11 +59,17 @@ pub fn load() -> Result<Config, CliError> {
     }
 
     let content = std::fs::read_to_string(&path).map_err(|source| {
-        CliError::with_source(format!("failed to read config file: {}", path.display()), source)
+        CliError::with_source(
+            format!("failed to read config file: {}", path.display()),
+            source,
+        )
     })?;
 
     let config: Config = toml::from_str(&content).map_err(|source| {
-        CliError::with_source(format!("failed to parse config file: {}", path.display()), source)
+        CliError::with_source(
+            format!("failed to parse config file: {}", path.display()),
+            source,
+        )
     })?;
 
     Ok(config)
@@ -77,11 +83,17 @@ pub fn load_project_config(project_path: &str) -> Result<ProjectConfig, CliError
     }
 
     let content = std::fs::read_to_string(&path).map_err(|source| {
-        CliError::with_source(format!("failed to read project config: {}", path.display()), source)
+        CliError::with_source(
+            format!("failed to read project config: {}", path.display()),
+            source,
+        )
     })?;
 
     let config: ProjectConfig = toml::from_str(&content).map_err(|source| {
-        CliError::with_source(format!("failed to parse project config: {}", path.display()), source)
+        CliError::with_source(
+            format!("failed to parse project config: {}", path.display()),
+            source,
+        )
     })?;
 
     Ok(config)
@@ -90,11 +102,7 @@ pub fn load_project_config(project_path: &str) -> Result<ProjectConfig, CliError
 /// Returns the effective pool size for a project. Checks project-level config
 /// first, then falls back to the global config. Returns 0 (no pre-warming) if
 /// neither specifies a pool size.
-pub fn effective_pool_size(
-    global_config: &Config,
-    project_name: &str,
-    project_path: &str,
-) -> u32 {
+pub fn effective_pool_size(global_config: &Config, project_name: &str, project_path: &str) -> u32 {
     // Project-level .work/config.toml takes priority.
     if let Ok(project_cfg) = load_project_config(project_path) {
         if let Some(size) = project_cfg.pool_size {
@@ -235,7 +243,10 @@ echo "hello"
             }),
             ..ProjectConfig::default()
         };
-        assert_eq!(project_hook_script(&project, "new-after"), Some("echo project"));
+        assert_eq!(
+            project_hook_script(&project, "new-after"),
+            Some("echo project")
+        );
     }
 
     #[test]

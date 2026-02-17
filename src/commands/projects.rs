@@ -139,10 +139,7 @@ fn delete_project(args: ProjectsDeleteArgs) -> Result<(), CliError> {
         }
 
         connection
-            .execute(
-                "DELETE FROM pool WHERE projectId = ?1",
-                params![project_id],
-            )
+            .execute("DELETE FROM pool WHERE projectId = ?1", params![project_id])
             .map_err(|source| CliError::with_source("failed to delete pool entries", source))?;
     }
 

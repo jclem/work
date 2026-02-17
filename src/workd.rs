@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::Router;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::Router;
 use rusqlite::{Connection, params};
 use tokio::net::UnixListener;
-use tokio::sync::{watch, Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore, watch};
 
 use sysinfo::System;
 
@@ -294,10 +294,7 @@ fn process_deletion(logger: &Logger, task: DeletionTask) {
     match db::open_database() {
         Ok(conn) => match conn.execute("DELETE FROM tasks WHERE id = ?1", params![task.id]) {
             Ok(_) => logger.info(format!("deleted task {}", task.name)),
-            Err(e) => logger.error(format!(
-                "failed to remove {} from database: {e}",
-                task.name
-            )),
+            Err(e) => logger.error(format!("failed to remove {} from database: {e}", task.name)),
         },
         Err(e) => {
             logger.error(format!(
@@ -368,8 +365,7 @@ async fn replenish_pools(
     };
 
     for project in &projects {
-        let pool_size =
-            config::effective_pool_size(&global_config, &project.name, &project.path);
+        let pool_size = config::effective_pool_size(&global_config, &project.name, &project.path);
 
         if pool_size == 0 {
             continue;
@@ -390,7 +386,10 @@ async fn replenish_pools(
                     continue;
                 }
                 Err(e) => {
-                    logger.error(format!("count pool task panicked for {}: {e}", project.name));
+                    logger.error(format!(
+                        "count pool task panicked for {}: {e}",
+                        project.name
+                    ));
                     continue;
                 }
             }
@@ -482,7 +481,10 @@ async fn replenish_pools(
                     logger.error(format!("pool creation failed for {}: {e}", project.name));
                 }
                 Err(e) => {
-                    logger.error(format!("pool creation task panicked for {}: {e}", project.name));
+                    logger.error(format!(
+                        "pool creation task panicked for {}: {e}",
+                        project.name
+                    ));
                 }
             }
         }
@@ -631,8 +633,8 @@ async fn force_shutdown_signal(logger: Logger) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm = signal(SignalKind::terminate())
-            .expect("failed to register SIGTERM handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
 
         tokio::select! {
             _ = ctrl_c => logger.info("received second SIGINT"),
@@ -654,8 +656,8 @@ async fn shutdown_signal(logger: Logger) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm = signal(SignalKind::terminate())
-            .expect("failed to register SIGTERM handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
 
         tokio::select! {
             _ = ctrl_c => logger.info("received SIGINT"),
