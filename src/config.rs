@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde::Deserialize;
 
@@ -10,7 +11,7 @@ pub struct Config {
     pub projects: Option<HashMap<String, ProjectConfig>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ProjectConfig {
     pub hooks: Option<HooksConfig>,
 }
@@ -39,9 +40,31 @@ pub fn load() -> Result<Config, CliError> {
     Ok(config)
 }
 
+pub fn load_project_config(project_path: &str) -> Result<ProjectConfig, CliError> {
+    let path = Path::new(project_path).join(".work/config.toml");
+
+    if !path.exists() {
+        return Ok(ProjectConfig::default());
+    }
+
+    let content = std::fs::read_to_string(&path).map_err(|source| {
+        CliError::with_source(format!("failed to read project config: {}", path.display()), source)
+    })?;
+
+    let config: ProjectConfig = toml::from_str(&content).map_err(|source| {
+        CliError::with_source(format!("failed to parse project config: {}", path.display()), source)
+    })?;
+
+    Ok(config)
+}
+
 pub fn hook_script<'a>(config: &'a Config, project_name: &str, hook_name: &str) -> Option<&'a str> {
     let projects = config.projects.as_ref()?;
     let project = projects.get(project_name)?;
+    project_hook_script(project, hook_name)
+}
+
+pub fn project_hook_script<'a>(project: &'a ProjectConfig, hook_name: &str) -> Option<&'a str> {
     let hooks = project.hooks.as_ref()?;
 
     match hook_name {
@@ -56,7 +79,6 @@ mod tests {
 
     #[test]
     fn load_returns_default_when_file_missing() {
-        // config_path() will point to a nonexistent file in test env
         let config = Config::default();
         assert!(config.projects.is_none());
     }
@@ -112,5 +134,35 @@ echo "hello"
         let config: Config = toml::from_str(toml_str).unwrap();
         let script = hook_script(&config, "my-project", "new-after").unwrap();
         assert!(script.contains("echo \"hello\""));
+    }
+
+    #[test]
+    fn project_hook_script_returns_script() {
+        let project = ProjectConfig {
+            hooks: Some(HooksConfig {
+                new_after: Some("echo project".to_string()),
+            }),
+        };
+        assert_eq!(project_hook_script(&project, "new-after"), Some("echo project"));
+    }
+
+    #[test]
+    fn project_hook_script_returns_none_without_hooks() {
+        let project = ProjectConfig::default();
+        assert!(project_hook_script(&project, "new-after").is_none());
+    }
+
+    #[test]
+    fn deserialize_project_config_from_toml() {
+        let toml_str = r#"
+[hooks]
+new-after = """
+#!/bin/bash
+echo "local"
+"""
+"#;
+        let config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        let script = project_hook_script(&config, "new-after").unwrap();
+        assert!(script.contains("echo \"local\""));
     }
 }

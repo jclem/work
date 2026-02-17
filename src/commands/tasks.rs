@@ -65,48 +65,44 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
     error::print_success(&format!("Task created: {task_name}"));
     println!("{}", worktree_path.display());
 
+    // Resolve hook script: project .work/config.toml takes priority over global config.
     let worktree_display = worktree_path.display();
-    let hook_path = Path::new(&project_path).join(".work/hooks/new-after");
+    let project_cfg = config::load_project_config(&project_path)?;
+    let hook_script = config::project_hook_script(&project_cfg, "new-after");
 
-    if hook_path.is_file() && is_executable(&hook_path) {
-        let hook_display = hook_path.display();
-        let is_fish = std::env::var("WORK_SHELL").ok().as_deref() == Some("fish");
-        if is_fish {
-            shell_eval(&format!(
-                "cd \"{worktree_display}\"\n\"{hook_display}\""
-            ));
-        } else {
-            shell_eval(&format!(
-                "cd \"{worktree_display}\"\n\"{hook_display}\""
-            ));
+    let global_cfg;
+    let hook_script = match hook_script {
+        Some(s) => Some(s),
+        None => {
+            global_cfg = config::load()?;
+            config::hook_script(&global_cfg, &project_name, "new-after")
         }
-    } else {
-        let cfg = config::load()?;
-        if let Some(script) = config::hook_script(&cfg, &project_name, "new-after") {
-            let tmp_dir = std::env::temp_dir().join("work-hooks");
-            std::fs::create_dir_all(&tmp_dir).map_err(|source| {
-                CliError::with_source("failed to create temp hook directory", source)
-            })?;
+    };
 
-            let tmp_file = tmp_dir.join(format!("new-after-{}", std::process::id()));
-            std::fs::write(&tmp_file, script).map_err(|source| {
-                CliError::with_source("failed to write temp hook script", source)
-            })?;
+    if let Some(script) = hook_script {
+        let tmp_dir = std::env::temp_dir().join("work-hooks");
+        std::fs::create_dir_all(&tmp_dir).map_err(|source| {
+            CliError::with_source("failed to create temp hook directory", source)
+        })?;
 
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&tmp_file, std::fs::Permissions::from_mode(0o755))
-                    .map_err(|source| {
-                        CliError::with_source("failed to chmod temp hook script", source)
-                    })?;
-            }
+        let tmp_file = tmp_dir.join(format!("new-after-{}", std::process::id()));
+        std::fs::write(&tmp_file, script).map_err(|source| {
+            CliError::with_source("failed to write temp hook script", source)
+        })?;
 
-            let tmp_display = tmp_file.display();
-            shell_eval(&format!(
-                "cd \"{worktree_display}\"\n\"{tmp_display}\""
-            ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp_file, std::fs::Permissions::from_mode(0o755))
+                .map_err(|source| {
+                    CliError::with_source("failed to chmod temp hook script", source)
+                })?;
         }
+
+        let tmp_display = tmp_file.display();
+        shell_eval(&format!(
+            "cd \"{worktree_display}\"\n\"{tmp_display}\""
+        ));
     }
 
     Ok(())
@@ -292,19 +288,6 @@ pub fn nuke() -> Result<(), CliError> {
         deleted_projects
     ));
     Ok(())
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    path.metadata()
-        .map(|m| m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(_path: &Path) -> bool {
-    true
 }
 
 fn shell_eval(cmd: &str) {
