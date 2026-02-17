@@ -63,6 +63,22 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
 
     error::print_success(&format!("Task created: {task_name}"));
     println!("{}", worktree_path.display());
+
+    let worktree_display = worktree_path.display();
+    let hook_path = Path::new(&project_path).join(".work/hooks/new-after");
+    let hook_display = hook_path.display();
+
+    let is_fish = std::env::var("WORK_SHELL").ok().as_deref() == Some("fish");
+    if is_fish {
+        shell_eval(&format!(
+            "cd \"{worktree_display}\"\nif test -x \"{hook_display}\"\n    \"{hook_display}\"\nend"
+        ));
+    } else {
+        shell_eval(&format!(
+            "cd \"{worktree_display}\"\nif [ -x \"{hook_display}\" ]; then \"{hook_display}\"; fi"
+        ));
+    }
+
     Ok(())
 }
 
@@ -207,6 +223,58 @@ pub fn delete(args: DeleteArgs) -> Result<(), CliError> {
 
     error::print_success("Task deleted.");
     Ok(())
+}
+
+pub fn nuke() -> Result<(), CliError> {
+    let connection = db::open_database()?;
+    db::prepare_schema(&connection)?;
+
+    let adapter = GitWorktreeAdapter;
+
+    let mut stmt = connection
+        .prepare(
+            "SELECT t.name, t.path, p.path \
+             FROM tasks t JOIN projects p ON t.projectId = p.id",
+        )
+        .map_err(|source| CliError::with_source("failed to query tasks", source))?;
+
+    let tasks: Vec<(String, String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|source| CliError::with_source("failed to query tasks", source))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| CliError::with_source("failed to load tasks", source))?;
+
+    for (task_name, task_path, project_path) in &tasks {
+        adapter.remove(project_path, task_name, Path::new(task_path), true)?;
+    }
+
+    connection
+        .execute("DELETE FROM tasks", [])
+        .map_err(|source| CliError::with_source("failed to delete tasks", source))?;
+
+    let deleted_projects = connection
+        .execute("DELETE FROM projects", [])
+        .map_err(|source| CliError::with_source("failed to delete projects", source))?;
+
+    error::print_success(&format!(
+        "Removed {} task(s) and {} project(s).",
+        tasks.len(),
+        deleted_projects
+    ));
+    Ok(())
+}
+
+fn shell_eval(cmd: &str) {
+    if let Ok(path) = std::env::var("WORK_SHELL_EVAL") {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{cmd}")
+            });
+    }
 }
 
 fn detect_project(

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::completions;
 
@@ -31,6 +31,12 @@ pub enum Command {
         shell: clap_complete::Shell,
     },
 
+    /// Print shell initialization script (wrapper function).
+    Init {
+        /// Shell to generate the init script for
+        shell: InitShell,
+    },
+
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
@@ -51,6 +57,9 @@ pub enum Command {
     /// Delete a task.
     #[command(alias = "rm")]
     Delete(DeleteArgs),
+
+    /// Remove all tasks and projects.
+    Nuke,
 }
 
 #[derive(Debug, Subcommand)]
@@ -158,6 +167,13 @@ pub struct DeleteArgs {
     /// Force removal even if the worktree has changes.
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum InitShell {
+    Fish,
+    Bash,
+    Zsh,
 }
 
 #[cfg(test)]

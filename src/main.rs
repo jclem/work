@@ -13,7 +13,8 @@ use clap_complete::CompleteEnv;
 
 use crate::cli::{Cli, Command};
 use crate::commands::{
-    daemon as daemon_command, projects as projects_command, tasks as tasks_command,
+    daemon as daemon_command, init as init_command, projects as projects_command,
+    tasks as tasks_command,
 };
 use crate::error::CliError;
 use crate::logger::get_logger;
@@ -70,6 +71,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                     CliError::with_source("failed to write shell completions", source)
                 })?;
         }
+        Command::Init { shell } => init_command::run(shell),
         Command::Daemon { command } => daemon_command::execute(command, logger.clone()).await?,
         Command::Projects { command } => {
             projects_command::execute(command)?;
@@ -77,6 +79,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::New(args) => tasks_command::create(args)?,
         Command::List(args) => tasks_command::list(args)?,
         Command::Delete(args) => tasks_command::delete(args)?,
+        Command::Nuke => tasks_command::nuke()?,
     }
 
     Ok(())
