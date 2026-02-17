@@ -10,7 +10,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use rusqlite::{Connection, params};
 use tokio::net::UnixListener;
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{watch, Notify, Semaphore};
 
 use crate::adapters::TaskAdapter;
 use crate::adapters::worktree::GitWorktreeAdapter;
@@ -91,10 +91,12 @@ impl Workd {
             .info(format!("http listening on {}", self.socket_path.display()));
 
         let deletion_notify = Arc::new(Notify::new());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         // Spawn background deletion worker.
-        tokio::spawn(deletion_worker(
+        let worker_handle = tokio::spawn(deletion_worker(
             deletion_notify.clone(),
+            shutdown_rx,
             self.logger.clone(),
         ));
 
@@ -110,6 +112,19 @@ impl Workd {
             .with_graceful_shutdown(shutdown_signal(self.logger.clone()))
             .await
             .map_err(|source| CliError::with_source("http listener exited unexpectedly", source))?;
+
+        self.logger
+            .info("waiting for in-flight deletions to finish (signal again to force quit)");
+        let _ = shutdown_tx.send(true);
+
+        tokio::select! {
+            _ = worker_handle => {}
+            _ = force_shutdown_signal(self.logger.clone()) => {
+                self.logger.info("forced shutdown");
+            }
+        }
+
+        self.logger.info("shutdown complete");
 
         drop(socket_guard);
 
@@ -151,52 +166,62 @@ struct DeletionTask {
     project_path: String,
 }
 
-async fn deletion_worker(notify: Arc<Notify>, logger: Logger) {
+async fn deletion_worker(notify: Arc<Notify>, mut shutdown: watch::Receiver<bool>, logger: Logger) {
     let logger = logger.child("deletionWorker");
 
     // Drain any stale "deleting" rows left from a previous run.
     notify.notify_one();
 
     loop {
-        notify.notified().await;
-
-        let tasks = {
-            let query_logger = logger.clone();
-            match tokio::task::spawn_blocking(move || query_deleting_tasks(&query_logger)).await {
-                Ok(Ok(tasks)) => tasks,
-                Ok(Err(e)) => {
-                    logger.error(format!("failed to query deleting tasks: {e}"));
-                    continue;
-                }
-                Err(e) => {
-                    logger.error(format!("query task panicked: {e}"));
-                    continue;
-                }
+        tokio::select! {
+            _ = notify.notified() => {}
+            _ = shutdown.changed() => {
+                logger.info("shutdown received, finishing in-flight deletions");
+                break;
             }
-        };
-
-        if tasks.is_empty() {
-            continue;
         }
 
-        logger.info(format!("processing {} deletion(s)", tasks.len()));
+        process_pending_deletions(&logger).await;
+    }
+}
 
-        let semaphore = Arc::new(Semaphore::new(4));
-        let mut handles = Vec::new();
-
-        for task in tasks {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let logger = logger.clone();
-
-            handles.push(tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                process_deletion(&logger, task);
-            }));
+async fn process_pending_deletions(logger: &Logger) {
+    let tasks = {
+        let query_logger = logger.clone();
+        match tokio::task::spawn_blocking(move || query_deleting_tasks(&query_logger)).await {
+            Ok(Ok(tasks)) => tasks,
+            Ok(Err(e)) => {
+                logger.error(format!("failed to query deleting tasks: {e}"));
+                return;
+            }
+            Err(e) => {
+                logger.error(format!("query task panicked: {e}"));
+                return;
+            }
         }
+    };
 
-        for handle in handles {
-            let _ = handle.await;
-        }
+    if tasks.is_empty() {
+        return;
+    }
+
+    logger.info(format!("processing {} deletion(s)", tasks.len()));
+
+    let semaphore = Arc::new(Semaphore::new(4));
+    let mut handles = Vec::new();
+
+    for task in tasks {
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let logger = logger.clone();
+
+        handles.push(tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            process_deletion(&logger, task);
+        }));
+    }
+
+    for handle in handles {
+        let _ = handle.await;
     }
 }
 
@@ -321,11 +346,49 @@ fn remove_stale_socket(socket_path: &Path) -> Result<(), CliError> {
     ))
 }
 
+async fn force_shutdown_signal(logger: Logger) {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm = signal(SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+
+        tokio::select! {
+            _ = ctrl_c => logger.info("received second SIGINT"),
+            _ = sigterm.recv() => logger.info("received second SIGTERM"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if ctrl_c.await.is_ok() {
+            logger.info("received second shutdown signal");
+        }
+    }
+}
+
 async fn shutdown_signal(logger: Logger) {
-    if tokio::signal::ctrl_c().await.is_ok() {
-        logger.info("received shutdown signal");
-    } else {
-        logger.error("failed to listen for shutdown signal");
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm = signal(SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+
+        tokio::select! {
+            _ = ctrl_c => logger.info("received SIGINT"),
+            _ = sigterm.recv() => logger.info("received SIGTERM"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if ctrl_c.await.is_ok() {
+            logger.info("received shutdown signal");
+        }
     }
 }
 
