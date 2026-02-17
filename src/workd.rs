@@ -325,8 +325,16 @@ async fn pool_worker(notify: Arc<Notify>, mut shutdown: watch::Receiver<bool>, l
     notify.notify_one();
 
     loop {
+        let poll_secs = config::load()
+            .ok()
+            .and_then(|c| c.daemon)
+            .map_or(300, |d| d.pool_poll_interval);
+
         tokio::select! {
             _ = notify.notified() => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(poll_secs)) => {
+                logger.info("periodic poll");
+            }
             _ = shutdown.changed() => {
                 logger.info("shutdown received");
                 break;
@@ -348,8 +356,6 @@ async fn replenish_pools(
     let daemon_cfg = global_config.daemon.as_ref();
     let max_load_frac = daemon_cfg.map_or(0.7, |d| d.pool_max_load);
     let min_memory_pct = daemon_cfg.map_or(10.0, |d| d.pool_min_memory_pct);
-    let check_interval_secs = daemon_cfg.map_or(30, |d| d.pool_check_interval);
-
     let projects = {
         let query_logger = logger.clone();
         match tokio::task::spawn_blocking(move || query_all_projects(&query_logger)).await {
@@ -405,28 +411,16 @@ async fn replenish_pools(
                 return Ok(());
             }
 
-            // Resource gating: wait until system resources are available.
-            loop {
-                let (load_ok, mem_ok) = check_system_resources(max_load_frac, min_memory_pct);
-
-                if load_ok && mem_ok {
-                    break;
-                }
-
+            // Resource gating: skip if system is under pressure.
+            let (load_ok, mem_ok) = check_system_resources(max_load_frac, min_memory_pct);
+            if !load_ok || !mem_ok {
                 if !load_ok {
-                    logger.info("backing off: system load too high");
+                    logger.info("skipping: system load too high");
                 }
                 if !mem_ok {
-                    logger.info("backing off: available memory too low");
+                    logger.info("skipping: available memory too low");
                 }
-
-                tokio::select! {
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(check_interval_secs)) => {}
-                    _ = shutdown.changed() => {
-                        logger.info("shutdown during resource wait, stopping");
-                        return Ok(());
-                    }
-                }
+                return Ok(());
             }
 
             let temp_name = generate_pool_temp_name();

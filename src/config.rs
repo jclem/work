@@ -27,8 +27,8 @@ fn default_min_memory() -> f64 {
     10.0
 }
 
-fn default_check_interval() -> u64 {
-    30
+fn default_poll_interval() -> u64 {
+    300
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,8 +37,8 @@ pub struct DaemonConfig {
     pub pool_max_load: f64,
     #[serde(rename = "pool-min-memory-pct", default = "default_min_memory")]
     pub pool_min_memory_pct: f64,
-    #[serde(rename = "pool-check-interval", default = "default_check_interval")]
-    pub pool_check_interval: u64,
+    #[serde(rename = "pool-poll-interval", default = "default_poll_interval")]
+    pub pool_poll_interval: u64,
 }
 
 #[derive(Debug, Deserialize)]
