@@ -15,8 +15,9 @@ use clap_complete::CompleteEnv;
 
 use crate::cli::{Cli, Command};
 use crate::commands::{
-    config as config_command, daemon as daemon_command, init as init_command, pool as pool_command,
-    projects as projects_command, tasks as tasks_command,
+    config as config_command, daemon as daemon_command, doctor as doctor_command,
+    init as init_command, pool as pool_command, projects as projects_command,
+    tasks as tasks_command,
 };
 use crate::error::CliError;
 use crate::logger::get_logger;
@@ -87,6 +88,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Nuke(args) => tasks_command::nuke(args)?,
         Command::Pool { command } => pool_command::execute(command)?,
         Command::Config { command } => config_command::execute(command)?,
+        Command::Doctor => doctor_command::run()?,
     }
 
     Ok(())
