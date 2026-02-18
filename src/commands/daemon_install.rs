@@ -68,7 +68,11 @@ mod platform {
 
         let uid = uid()?;
         let status = process::Command::new("launchctl")
-            .args(["bootstrap", &format!("gui/{uid}"), &plist_path.to_string_lossy()])
+            .args([
+                "bootstrap",
+                &format!("gui/{uid}"),
+                &plist_path.to_string_lossy(),
+            ])
             .status()
             .map_err(|e| CliError::with_source("failed to run launchctl bootstrap", e))?;
 
@@ -89,7 +93,11 @@ mod platform {
 
         let uid = uid()?;
         let status = process::Command::new("launchctl")
-            .args(["bootout", &format!("gui/{uid}"), &plist_path.to_string_lossy()])
+            .args([
+                "bootout",
+                &format!("gui/{uid}"),
+                &plist_path.to_string_lossy(),
+            ])
             .status()
             .map_err(|e| CliError::with_source("failed to run launchctl bootout", e))?;
 
