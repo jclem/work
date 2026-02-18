@@ -75,16 +75,15 @@ pub fn run() -> Result<(), CliError> {
     let mut results = Vec::new();
 
     let conn = check_database(&mut results);
+    let daemon_alive = check_daemon(&mut results);
 
     if let Some(conn) = &conn {
         check_projects(conn, &mut results);
         check_tasks(conn, &mut results);
         check_pool(conn, &mut results);
-        check_sessions(conn, &mut results);
+        check_sessions(conn, &mut results, daemon_alive);
         check_orphans(conn, &mut results);
     }
-
-    check_daemon(&mut results);
 
     print_results(&results);
 
@@ -285,7 +284,7 @@ fn check_pool(conn: &Connection, results: &mut Vec<CheckResult>) {
     }
 }
 
-fn check_sessions(conn: &Connection, results: &mut Vec<CheckResult>) {
+fn check_sessions(conn: &Connection, results: &mut Vec<CheckResult>, daemon_alive: bool) {
     // Count sessions by status.
     let mut stmt = match conn
         .prepare("SELECT status, COUNT(*) FROM sessions GROUP BY status ORDER BY status")
@@ -323,32 +322,35 @@ fn check_sessions(conn: &Connection, results: &mut Vec<CheckResult>) {
         .find(|(s, _)| s == "planned")
         .map_or(0, |(_, c)| *c);
 
-    // Check for orphaned running sessions (daemon isn't tracking them).
-    if running > 0 {
-        results.push(CheckResult::warn_with_hint(
-            "sessions",
-            format!("{running} session(s) stuck in 'running' status"),
-            "restart the daemon to recover them, or use `work session stop <ID>`",
-        ));
-    }
+    // Only warn about orphaned running sessions when the daemon is down.
+    // When the daemon is alive, it manages running sessions — they're expected.
+    if !daemon_alive {
+        if running > 0 {
+            results.push(CheckResult::warn_with_hint(
+                "sessions",
+                format!("{running} session(s) stuck in 'running' status"),
+                "restart the daemon to recover them, or use `work session stop <ID>`",
+            ));
+        }
 
-    // Check for orphaned agent processes.
-    if let Ok(mut pid_stmt) =
-        conn.prepare("SELECT id, pid FROM sessions WHERE status = 'running' AND pid IS NOT NULL")
-    {
-        let orphaned_procs: Vec<(i64, i64)> = pid_stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
-            .unwrap_or_default();
+        // Check for orphaned agent processes.
+        if let Ok(mut pid_stmt) = conn
+            .prepare("SELECT id, pid FROM sessions WHERE status = 'running' AND pid IS NOT NULL")
+        {
+            let orphaned_procs: Vec<(i64, i64)> = pid_stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+                .unwrap_or_default();
 
-        for (id, pid) in &orphaned_procs {
-            let alive = unsafe { libc::kill(*pid as i32, 0) } == 0;
-            if alive {
-                results.push(CheckResult::warn_with_hint(
-                    format!("session {id}"),
-                    format!("orphaned agent process (pid {pid}) still running"),
-                    format!("stop with `work session stop {id}`"),
-                ));
+            for (id, pid) in &orphaned_procs {
+                let alive = unsafe { libc::kill(*pid as i32, 0) } == 0;
+                if alive {
+                    results.push(CheckResult::warn_with_hint(
+                        format!("session {id}"),
+                        format!("orphaned agent process (pid {pid}) still running"),
+                        format!("stop with `work session stop {id}`"),
+                    ));
+                }
             }
         }
     }
@@ -394,7 +396,7 @@ fn check_sessions(conn: &Connection, results: &mut Vec<CheckResult>) {
         }
     }
 
-    if missing_worktrees.is_empty() && running == 0 {
+    if missing_worktrees.is_empty() {
         let summary = format!("{total} total ({planned} planned, {running} running)");
         results.push(CheckResult::pass(format!("sessions: {summary}")));
     } else {
@@ -402,7 +404,7 @@ fn check_sessions(conn: &Connection, results: &mut Vec<CheckResult>) {
     }
 }
 
-fn check_daemon(results: &mut Vec<CheckResult>) {
+fn check_daemon(results: &mut Vec<CheckResult>) -> bool {
     let pid_path = paths::pid_file_path();
 
     let pid_content = match fs::read_to_string(&pid_path) {
@@ -413,7 +415,7 @@ fn check_daemon(results: &mut Vec<CheckResult>) {
                 "not running (no PID file)",
                 "start the daemon with `work daemon start`",
             ));
-            return;
+            return false;
         }
     };
 
@@ -421,7 +423,7 @@ fn check_daemon(results: &mut Vec<CheckResult>) {
         Ok(p) => p,
         Err(_) => {
             results.push(CheckResult::fail("daemon", "invalid PID file contents"));
-            return;
+            return false;
         }
     };
 
@@ -431,19 +433,21 @@ fn check_daemon(results: &mut Vec<CheckResult>) {
             format!("PID {pid} is not running (stale PID file)"),
             "start the daemon with `work daemon start`",
         ));
-        return;
+        return false;
     }
 
     let socket_path = paths::socket_path(None);
     match probe_healthz(&socket_path) {
         Ok(()) => {
             results.push(CheckResult::pass(format!("daemon: running (pid {pid})")));
+            true
         }
         Err(e) => {
             results.push(CheckResult::fail(
                 "daemon",
                 format!("pid {pid} alive but healthz failed: {e}"),
             ));
+            false
         }
     }
 }
