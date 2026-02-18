@@ -1,2 +1,3 @@
-[vars]
-email = "noreply@anthropic.com"
+[vars.coauthor]
+claude = "Claude <noreply@anthropic.com>"
+codex = "Codex <noreply@openai.com>"

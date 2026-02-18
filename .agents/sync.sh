@@ -9,18 +9,40 @@ if [[ "${1:-}" == "--check" ]]; then
   check_mode=true
 fi
 
-# Parse vars from config.toml
+# Parse vars from config.toml (supports nested sections like [vars.coauthor])
 declare -A vars
+in_vars=false
+current_prefix=""
 while IFS= read -r line; do
-  if [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)\ *=\ *\"(.*)\"$ ]]; then
-    vars["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+  if [[ "$line" =~ ^\[vars\]$ ]]; then
+    in_vars=true
+    current_prefix=""
+  elif [[ "$line" =~ ^\[vars\.([a-zA-Z_][a-zA-Z0-9_.]*)\]$ ]]; then
+    in_vars=true
+    current_prefix="${BASH_REMATCH[1]}."
+  elif [[ "$line" =~ ^\[.*\]$ ]]; then
+    in_vars=false
+  elif $in_vars && [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)\ *=\ *\"(.*)\"$ ]]; then
+    vars["${current_prefix}${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
   fi
 done < "$AGENTS_DIR/config.toml"
 
-# Render template: replace {{var}} patterns with values from config
+# Render template: replace {{var}} patterns with values from config.
+# When an agent name is provided, agent-specific vars take priority.
+# E.g. with agent "claude", {{coauthor}} resolves to vars["coauthor.claude"].
 render() {
-  local content
+  local content agent="${2:-}"
   content=$(<"$1")
+
+  if [[ -n "$agent" ]]; then
+    for key in "${!vars[@]}"; do
+      if [[ "$key" == *".$agent" ]]; then
+        local base_key="${key%."$agent"}"
+        content="${content//\{\{$base_key\}\}/${vars[$key]}}"
+      fi
+    done
+  fi
+
   for key in "${!vars[@]}"; do
     content="${content//\{\{$key\}\}/${vars[$key]}}"
   done
@@ -29,9 +51,9 @@ render() {
 
 # Sync a rendered file to a destination, or check it matches
 sync_file() {
-  local src="$1" dest="$2"
+  local src="$1" dest="$2" agent="${3:-}"
   local rendered
-  rendered="$(render "$src")"
+  rendered="$(render "$src" "$agent")"
 
   if $check_mode; then
     if [[ ! -f "$dest" ]]; then
@@ -65,9 +87,9 @@ for skill_dir in "$AGENTS_DIR"/skills/*/; do
   src="$skill_dir/SKILL.md"
   [[ -f "$src" ]] || continue
 
-  for target_dir in ".claude/skills" ".codex/skills"; do
-    dest="$ROOT_DIR/$target_dir/$skill_name/SKILL.md"
-    if ! sync_file "$src" "$dest"; then
+  for target in claude codex; do
+    dest="$ROOT_DIR/.$target/skills/$skill_name/SKILL.md"
+    if ! sync_file "$src" "$dest" "$target"; then
       failed=true
     fi
   done

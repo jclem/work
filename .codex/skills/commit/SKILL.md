@@ -16,7 +16,7 @@ Create git commits for staged or unstaged changes in the repository.
 - Avoid prefixes like `feat:`, `fix:`, `chore:`.
 - Optional body: include concise detail about what changed and why.
 - End each commit message with a co-author trailer:
-  `Co-Authored-By: Claude <noreply@anthropic.com>`
+  `Co-Authored-By: Codex <noreply@openai.com>`
 
 ## Workflow
 
