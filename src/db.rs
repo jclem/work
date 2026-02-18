@@ -36,6 +36,12 @@ CREATE TABLE IF NOT EXISTS pool (
   FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
   UNIQUE (projectId, tempName)
 );
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  createdAt INTEGER NOT NULL
+);
 "#;
 
 pub fn open_database() -> Result<Connection, CliError> {

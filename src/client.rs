@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::CliError;
 use crate::paths;
 use crate::workd::{
-    CreateProjectRequest, CreateProjectResponse, CreateTaskRequest, CreateTaskResponse,
-    DeleteProjectRequest, DeleteTaskRequest, ListTasksRequest, NukeResponse, ProjectInfo, TaskInfo,
+    ClearPoolResponse, CreateProjectRequest, CreateProjectResponse, CreateTaskRequest,
+    CreateTaskResponse, DeleteProjectRequest, DeleteTaskRequest, ListTasksRequest, NukeResponse,
+    ProjectInfo, TaskInfo,
 };
 
 fn daemon_error() -> CliError {
@@ -175,6 +176,10 @@ pub fn delete_task(
 
 pub fn nuke() -> Result<NukeResponse, CliError> {
     post_json("/tasks/nuke", &serde_json::json!({}))
+}
+
+pub fn clear_pool() -> Result<ClearPoolResponse, CliError> {
+    post_json("/pool/clear", &serde_json::json!({}))
 }
 
 // ---------------------------------------------------------------------------
