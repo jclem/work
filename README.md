@@ -19,12 +19,23 @@ Created task 2026-02-17-bold-fox
 - **Post-creation hooks** -- run setup scripts (`npm install`, etc.) automatically after creating a task
 - **Resource-aware** -- pool pre-warming backs off when CPU or memory is under pressure
 
+## Install
+
+**With [mise](https://mise.jdx.dev):**
+
+```bash
+mise use -g github:jclem/work
+```
+
+**From source:**
+
+```bash
+cargo install --path .
+```
+
 ## Quick start
 
 ```bash
-# Build and install
-cargo install --path .
-
 # Initialize your shell (add to your shell config)
 eval "$(work init zsh)"   # or bash, fish
 
