@@ -107,6 +107,7 @@ work projects list                # List all registered projects
 work projects ls --json           # JSON output
 
 work projects delete my-project   # Delete project and its worktrees
+work projects rm my-project      # Alias for delete
 ```
 
 ### Daemon
@@ -214,8 +215,8 @@ workers:
 - **Pool worker** -- maintains pre-warmed worktrees, respecting CPU and memory thresholds
 
 Socket location:
-- `$XDG_RUNTIME_DIR/workd/workd.sock` (when `XDG_RUNTIME_DIR` is set)
-- `/tmp/workd/workd.sock` (fallback)
+- `$XDG_RUNTIME_DIR/work/workd.sock` (when `XDG_RUNTIME_DIR` is set)
+- `/tmp/work/workd.sock` (fallback)
 
 Override with `work daemon start --socket /path/to/workd.sock` or the
 `WORKD_SOCKET_PATH` environment variable.
@@ -224,11 +225,11 @@ Override with `work daemon start --socket /path/to/workd.sock` or the
 
 | File | Default path |
 |------|-------------|
-| Database | `~/.local/share/workd/database.sqlite` |
+| Database | `~/.local/share/work/database.sqlite` |
 | Global config | `~/.config/work/config.toml` |
-| Daemon socket | `$XDG_RUNTIME_DIR/workd/workd.sock` |
-| Daemon PID | `$XDG_RUNTIME_DIR/workd/workd.pid` |
-| Daemon log | `$XDG_RUNTIME_DIR/workd/workd.log` |
+| Daemon socket | `$XDG_RUNTIME_DIR/work/workd.sock` |
+| Daemon PID | `$XDG_RUNTIME_DIR/work/workd.pid` |
+| Daemon log | `$XDG_RUNTIME_DIR/work/workd.log` |
 | Worktrees | `~/.local/share/work/<project>/worktrees/<task>/` |
 
 All paths respect `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_RUNTIME_DIR`.
