@@ -29,7 +29,7 @@ run = [
 ]
 
 [tasks."release:github"]
-run = "gh workflow run release.yml --field bump={{arg(name='bump', usage='patch, minor, or major')}} --field dryRun={{option(name='dry-run', default='true')}}"
+run = "gh workflow run release.yml --field bump={{arg(name='bump', usage='patch, minor, or major')}}"
 
 [tasks.pre-commit]
 depends = ["check", "test"]
