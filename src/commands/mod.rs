@@ -7,3 +7,4 @@ pub mod pool;
 pub mod projects;
 pub mod sessions;
 pub mod tasks;
+pub mod tree;

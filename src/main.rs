@@ -17,7 +17,7 @@ use crate::cli::{Cli, Command};
 use crate::commands::{
     config as config_command, daemon as daemon_command, doctor as doctor_command,
     init as init_command, pool as pool_command, projects as projects_command,
-    sessions as sessions_command, tasks as tasks_command,
+    sessions as sessions_command, tasks as tasks_command, tree as tree_command,
 };
 use crate::error::CliError;
 use crate::logger::get_logger;
@@ -84,6 +84,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         }
         Command::New(args) => tasks_command::create(args)?,
         Command::List(args) => tasks_command::list(args)?,
+        Command::Tree(args) => tree_command::run(args)?,
         Command::Cd(args) => tasks_command::cd(args)?,
         Command::Delete(args) => tasks_command::delete(args)?,
         Command::Nuke(args) => tasks_command::nuke(args)?,

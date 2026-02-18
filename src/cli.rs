@@ -64,6 +64,9 @@ pub enum Command {
     #[command(alias = "rm")]
     Delete(DeleteArgs),
 
+    /// Show a tree of all projects, tasks, and sessions.
+    Tree(TreeArgs),
+
     /// Remove all tasks and projects.
     Nuke(NukeArgs),
 
@@ -377,6 +380,17 @@ pub struct CdArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct TreeArgs {
+    /// Show only a specific project.
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+
+    /// Include session details under each task.
+    #[arg(long)]
+    pub sessions: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct NukeArgs {
     /// Skip confirmation prompt.
     #[arg(long)]
@@ -516,6 +530,33 @@ mod tests {
     fn delete_requires_name() {
         let result = Cli::try_parse_from(["work", "delete"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn tree_parses() {
+        let cli = Cli::try_parse_from(["work", "tree"]).unwrap();
+        assert!(matches!(cli.command, Command::Tree(_)));
+    }
+
+    #[test]
+    fn tree_parses_with_project_filter() {
+        let cli = Cli::try_parse_from(["work", "tree", "--project", "my-proj"]).unwrap();
+        if let Command::Tree(args) = cli.command {
+            assert_eq!(args.project.as_deref(), Some("my-proj"));
+            assert!(!args.sessions);
+        } else {
+            panic!("expected Command::Tree");
+        }
+    }
+
+    #[test]
+    fn tree_parses_with_sessions_flag() {
+        let cli = Cli::try_parse_from(["work", "tree", "--sessions"]).unwrap();
+        if let Command::Tree(args) = cli.command {
+            assert!(args.sessions);
+        } else {
+            panic!("expected Command::Tree");
+        }
     }
 
     #[test]
