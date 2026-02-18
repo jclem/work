@@ -988,7 +988,7 @@ async fn pool_pull_worker(mut shutdown: watch::Receiver<bool>, logger: Logger) {
 
     loop {
         let cfg = config::load().ok().and_then(|c| c.daemon);
-        let enabled = cfg.as_ref().is_some_and(|d| d.pool_pull_enabled);
+        let enabled = cfg.as_ref().is_none_or(|d| d.pool_pull_enabled);
         let interval_secs = cfg.as_ref().map_or(3600, |d| d.pool_pull_interval);
 
         if !enabled {
