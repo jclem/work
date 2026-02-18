@@ -80,6 +80,7 @@ pub fn run() -> Result<(), CliError> {
         check_projects(conn, &mut results);
         check_tasks(conn, &mut results);
         check_pool(conn, &mut results);
+        check_sessions(conn, &mut results);
         check_orphans(conn, &mut results);
     }
 
@@ -281,6 +282,123 @@ fn check_pool(conn: &Connection, results: &mut Vec<CheckResult>) {
         results.push(CheckResult::pass(format!("pool: {} entries", rows.len())));
     } else {
         results.append(&mut failures);
+    }
+}
+
+fn check_sessions(conn: &Connection, results: &mut Vec<CheckResult>) {
+    // Count sessions by status.
+    let mut stmt = match conn
+        .prepare("SELECT status, COUNT(*) FROM sessions GROUP BY status ORDER BY status")
+    {
+        Ok(s) => s,
+        Err(e) => {
+            results.push(CheckResult::fail("sessions", format!("query failed: {e}")));
+            return;
+        }
+    };
+
+    let counts: Vec<(String, i64)> = match stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+    {
+        Ok(r) => r,
+        Err(e) => {
+            results.push(CheckResult::fail("sessions", format!("query failed: {e}")));
+            return;
+        }
+    };
+
+    if counts.is_empty() {
+        results.push(CheckResult::pass("sessions: none"));
+        return;
+    }
+
+    let total: i64 = counts.iter().map(|(_, c)| c).sum();
+    let running = counts
+        .iter()
+        .find(|(s, _)| s == "running")
+        .map_or(0, |(_, c)| *c);
+    let planned = counts
+        .iter()
+        .find(|(s, _)| s == "planned")
+        .map_or(0, |(_, c)| *c);
+
+    // Check for orphaned running sessions (daemon isn't tracking them).
+    if running > 0 {
+        results.push(CheckResult::warn_with_hint(
+            "sessions",
+            format!("{running} session(s) stuck in 'running' status"),
+            "restart the daemon to recover them, or use `work session stop <ID>`",
+        ));
+    }
+
+    // Check for orphaned agent processes.
+    if let Ok(mut pid_stmt) =
+        conn.prepare("SELECT id, pid FROM sessions WHERE status = 'running' AND pid IS NOT NULL")
+    {
+        let orphaned_procs: Vec<(i64, i64)> = pid_stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+            .unwrap_or_default();
+
+        for (id, pid) in &orphaned_procs {
+            let alive = unsafe { libc::kill(*pid as i32, 0) } == 0;
+            if alive {
+                results.push(CheckResult::warn_with_hint(
+                    format!("session {id}"),
+                    format!("orphaned agent process (pid {pid}) still running"),
+                    format!("stop with `work session stop {id}`"),
+                ));
+            }
+        }
+    }
+
+    // Check for sessions with missing worktrees.
+    let mut wt_stmt = match conn.prepare(
+        "SELECT s.id, s.branchName, t.path \
+         FROM sessions s \
+         LEFT JOIN tasks t ON s.taskId = t.id \
+         WHERE s.status IN ('planned', 'running', 'reported')",
+    ) {
+        Ok(s) => s,
+        Err(_) => {
+            let summary = format!("{total} total ({planned} planned, {running} running)");
+            results.push(CheckResult::pass(format!("sessions: {summary}")));
+            return;
+        }
+    };
+
+    let active_sessions: Vec<(i64, String, Option<String>)> = wt_stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .unwrap_or_default();
+
+    let mut missing_worktrees = Vec::new();
+    for (id, branch, task_path) in &active_sessions {
+        match task_path {
+            None => {
+                missing_worktrees.push(CheckResult::fail_with_hint(
+                    format!("session {id} ({branch})"),
+                    "task record missing (deleted while session active)",
+                    format!("delete with `work session delete {id}`"),
+                ));
+            }
+            Some(path) if !Path::new(path).exists() => {
+                missing_worktrees.push(CheckResult::fail_with_hint(
+                    format!("session {id} ({branch})"),
+                    format!("worktree missing: {path}"),
+                    format!("delete with `work session delete {id}`"),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if missing_worktrees.is_empty() && running == 0 {
+        let summary = format!("{total} total ({planned} planned, {running} running)");
+        results.push(CheckResult::pass(format!("sessions: {summary}")));
+    } else {
+        results.append(&mut missing_worktrees);
     }
 }
 

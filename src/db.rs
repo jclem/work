@@ -42,6 +42,32 @@ CREATE TABLE IF NOT EXISTS jobs (
   kind TEXT NOT NULL,
   createdAt INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id INTEGER PRIMARY KEY,
+  projectId INTEGER NOT NULL,
+  issueRef TEXT NOT NULL,
+  attemptNo INTEGER NOT NULL,
+  taskId INTEGER,
+  branchName TEXT NOT NULL,
+  baseSha TEXT NOT NULL,
+  headSha TEXT,
+  agentCommand TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'planned',
+  mergeable INTEGER,
+  exitCode INTEGER,
+  createdAt INTEGER NOT NULL,
+  updatedAt INTEGER NOT NULL,
+  FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (taskId) REFERENCES tasks(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_reports (
+  sessionId INTEGER PRIMARY KEY,
+  reportMd TEXT NOT NULL,
+  summaryJson TEXT,
+  FOREIGN KEY (sessionId) REFERENCES sessions(id) ON DELETE CASCADE
+);
 "#;
 
 pub fn open_database() -> Result<Connection, CliError> {
@@ -71,6 +97,7 @@ pub fn prepare_schema(connection: &Connection) -> Result<(), CliError> {
     for stmt in &[
         "ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
         "ALTER TABLE tasks ADD COLUMN deleteForce INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE sessions ADD COLUMN pid INTEGER",
     ] {
         match connection.execute_batch(stmt) {
             Ok(()) => {}

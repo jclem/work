@@ -80,6 +80,12 @@ pub enum Command {
         command: ConfigCommand,
     },
 
+    /// Manage sessions (parallel agent attempts).
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
+
     /// Check the health of the work system.
     Doctor,
 }
@@ -94,6 +100,121 @@ pub enum PoolCommand {
 pub enum ConfigCommand {
     /// Open the config file in $EDITOR.
     Edit,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionCommand {
+    /// Start new sessions for an issue.
+    Start(SessionStartArgs),
+    /// List sessions.
+    #[command(alias = "ls")]
+    List(SessionListArgs),
+    /// Show session details and report.
+    Show(SessionShowArgs),
+    /// Rank sessions by heuristic score.
+    Rank(SessionRankArgs),
+    /// Accept a session, abandon siblings.
+    Pick(SessionPickArgs),
+    /// Reject a session.
+    Reject(SessionRejectArgs),
+    /// Stop a running session.
+    Stop(SessionStopArgs),
+    /// Delete a session and its worktree.
+    #[command(alias = "rm")]
+    Delete(SessionDeleteArgs),
+    /// Open the session's worktree.
+    Open(SessionOpenArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SessionStartArgs {
+    /// Issue description (freeform text).
+    #[arg(long)]
+    pub issue: String,
+
+    /// Number of parallel agent sessions to start.
+    #[arg(long, default_value_t = 1)]
+    pub agents: u32,
+
+    /// Project to run sessions in.
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionListArgs {
+    /// Filter by issue text.
+    #[arg(long)]
+    pub issue: Option<String>,
+
+    /// Project to filter sessions for.
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+
+    /// Output as JSON.
+    #[arg(long, conflicts_with = "plain")]
+    pub json: bool,
+
+    /// Output as tab-separated values with no headers.
+    #[arg(long, conflicts_with = "json")]
+    pub plain: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionShowArgs {
+    /// Session ID.
+    #[arg(value_name = "ID")]
+    pub id: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionRankArgs {
+    /// Issue to rank sessions for.
+    #[arg(long)]
+    pub issue: String,
+
+    /// Project to filter sessions for.
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionPickArgs {
+    /// Session ID to accept.
+    #[arg(value_name = "ID")]
+    pub id: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionRejectArgs {
+    /// Session ID to reject.
+    #[arg(value_name = "ID")]
+    pub id: i64,
+
+    /// Reason for rejection.
+    #[arg(long)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionStopArgs {
+    /// Session ID to stop.
+    #[arg(value_name = "ID")]
+    pub id: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionDeleteArgs {
+    /// Session ID to delete.
+    #[arg(value_name = "ID")]
+    pub id: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionOpenArgs {
+    /// Session ID.
+    #[arg(value_name = "ID")]
+    pub id: i64,
 }
 
 #[derive(Debug, Subcommand)]
