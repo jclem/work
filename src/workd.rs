@@ -1115,6 +1115,8 @@ async fn pull_pool_worktrees(
             )
             .map_err(|e| CliError::with_source("failed to lock pool entry", e))?;
 
+            logger_clone.info(format!("locked pool worktree {worktree_path} for pull"));
+
             let adapter = GitWorktreeAdapter;
             let wt_path = Path::new(&worktree_path);
             match adapter.pull(wt_path, &default_branch_clone) {
@@ -1136,6 +1138,8 @@ async fn pull_pool_worktrees(
                 params![pool_id],
             )
             .map_err(|e| CliError::with_source("failed to unlock pool entry", e))?;
+
+            logger_clone.info(format!("unlocked pool worktree {worktree_path}"));
 
             Ok(())
         })
