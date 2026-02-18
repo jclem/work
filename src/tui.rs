@@ -1,4 +1,5 @@
 use std::io;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -100,6 +101,19 @@ struct SessionDetail {
 }
 
 // ---------------------------------------------------------------------------
+// Session log viewer overlay
+// ---------------------------------------------------------------------------
+
+struct SessionLogs {
+    session_id: i64,
+    log_path: PathBuf,
+    lines: Vec<String>,
+    scroll: u16,
+    follow: bool,
+    last_read: Instant,
+}
+
+// ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
 
@@ -126,6 +140,7 @@ struct App {
     input: Option<InputPrompt>,
     confirm: Option<Confirm>,
     session_detail: Option<SessionDetail>,
+    session_logs: Option<SessionLogs>,
     help_visible: bool,
 }
 
@@ -169,6 +184,7 @@ impl App {
             input: None,
             confirm: None,
             session_detail: None,
+            session_logs: None,
             help_visible: false,
         };
         app.refresh_all();
@@ -479,6 +495,43 @@ impl App {
         }
     }
 
+    fn open_session_logs(&mut self) {
+        let Some(session) = self.selected_session() else {
+            return;
+        };
+
+        let id = session.id;
+        let task_path = match &session.task_path {
+            Some(p) => p.clone(),
+            None => {
+                self.set_status(format!("Session {id} has no worktree"), StatusKind::Error);
+                return;
+            }
+        };
+
+        let log_path = std::path::Path::new(&task_path).join(".work/session-output.log");
+
+        if !log_path.exists() {
+            self.set_status(
+                format!("No log file for session {id} (may not have started yet)"),
+                StatusKind::Error,
+            );
+            return;
+        }
+
+        let lines = read_log_lines(&log_path);
+        let line_count = lines.len() as u16;
+
+        self.session_logs = Some(SessionLogs {
+            session_id: id,
+            log_path,
+            follow: session.status == "running" || session.status == "planned",
+            scroll: line_count.saturating_sub(1),
+            lines,
+            last_read: Instant::now(),
+        });
+    }
+
     fn handle_daemon_action(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('s') => {
@@ -771,6 +824,19 @@ fn run_loop(
             app.refresh_all();
         }
 
+        // Refresh session logs every second when the overlay is open
+        if let Some(ref mut logs) = app.session_logs
+            && logs.last_read.elapsed() > Duration::from_secs(1)
+        {
+            let new_lines = read_log_lines(&logs.log_path);
+            let grew = new_lines.len() > logs.lines.len();
+            logs.lines = new_lines;
+            logs.last_read = Instant::now();
+            if logs.follow && grew {
+                logs.scroll = (logs.lines.len() as u16).saturating_sub(1);
+            }
+        }
+
         // Clear stale status messages after 5 seconds
         if let Some((_, ts, _)) = &app.status_message
             && ts.elapsed() > Duration::from_secs(5)
@@ -796,6 +862,46 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     // Help overlay
     if app.help_visible {
         app.help_visible = false;
+        return;
+    }
+
+    // Session logs overlay
+    if let Some(ref mut logs) = app.session_logs {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.session_logs = None;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                logs.follow = false;
+                logs.scroll = logs.scroll.saturating_add(1);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                logs.follow = false;
+                logs.scroll = logs.scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                logs.follow = false;
+                logs.scroll = logs.scroll.saturating_add(20);
+            }
+            KeyCode::PageUp => {
+                logs.follow = false;
+                logs.scroll = logs.scroll.saturating_sub(20);
+            }
+            KeyCode::Char('f') => {
+                logs.follow = !logs.follow;
+                if logs.follow {
+                    logs.scroll = (logs.lines.len() as u16).saturating_sub(1);
+                }
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                logs.scroll = (logs.lines.len() as u16).saturating_sub(1);
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                logs.follow = false;
+                logs.scroll = 0;
+            }
+            _ => {}
+        }
         return;
     }
 
@@ -856,6 +962,15 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Ctrl+L: open session logs (Sessions tab only)
+    if key.code == KeyCode::Char('l')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && app.tab == Tab::Sessions
+    {
+        app.open_session_logs();
+        return;
+    }
+
     // Global keys
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
@@ -908,6 +1023,10 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     if let Some(ref detail) = app.session_detail {
         render_session_detail(f, detail, area);
+    }
+
+    if let Some(ref logs) = app.session_logs {
+        render_session_logs(f, logs, area);
     }
 
     if app.help_visible {
@@ -1083,8 +1202,10 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .title(" Sessions ")
                 .title_bottom(
-                    Line::from(" s start │ p pick │ x stop │ r reject │ d delete │ ↵ details ")
-                        .right_aligned(),
+                    Line::from(
+                        " s start │ ↵ details │ ^l logs │ p pick │ x stop │ r reject │ d delete ",
+                    )
+                    .right_aligned(),
                 ),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
@@ -1478,6 +1599,78 @@ fn render_session_detail(f: &mut Frame, detail: &SessionDetail, area: Rect) {
     }
 }
 
+fn render_session_logs(f: &mut Frame, logs: &SessionLogs, area: Rect) {
+    let popup = centered_rect(90, 90, area);
+    f.render_widget(Clear, popup);
+
+    let inner_height = popup.height.saturating_sub(2); // account for borders
+
+    let lines: Vec<Line> = logs
+        .lines
+        .iter()
+        .map(|l| Line::from(Span::raw(l.as_str())))
+        .collect();
+
+    let content_height = lines.len() as u16;
+
+    // Clamp scroll so we don't scroll past the end
+    let max_scroll = content_height.saturating_sub(inner_height);
+    let scroll = logs.scroll.min(max_scroll);
+
+    let follow_indicator = if logs.follow {
+        Span::styled(
+            " FOLLOW ",
+            Style::default().fg(Color::Black).bg(Color::Green),
+        )
+    } else {
+        Span::styled(
+            " PAUSED ",
+            Style::default().fg(Color::Black).bg(Color::DarkGray),
+        )
+    };
+
+    let title_line = Line::from(vec![
+        Span::raw(" Session "),
+        Span::styled(
+            logs.session_id.to_string(),
+            Style::default().fg(Color::Cyan).bold(),
+        ),
+        Span::raw(" Logs "),
+        follow_indicator,
+        Span::raw(" "),
+    ]);
+
+    let paragraph = Paragraph::new(lines).scroll((scroll, 0)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(title_line)
+            .title_bottom(
+                Line::from(" ↑↓ scroll │ f follow │ g top │ G end │ q/Esc close ").right_aligned(),
+            ),
+    );
+
+    f.render_widget(paragraph, popup);
+
+    // Scrollbar
+    if content_height > inner_height {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        let mut scrollbar_state =
+            ScrollbarState::new(content_height.saturating_sub(inner_height) as usize)
+                .position(scroll as usize);
+        let scrollbar_area = Rect {
+            x: popup.x + popup.width - 1,
+            y: popup.y + 1,
+            width: 1,
+            height: popup.height.saturating_sub(2),
+        };
+        f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    }
+}
+
 fn render_help(f: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(70, 75, area);
     f.render_widget(Clear, popup);
@@ -1532,6 +1725,7 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             )));
             lines.push(help_line("s", "Start new session (enter issue)"));
             lines.push(help_line("Enter", "View session details & report"));
+            lines.push(help_line("Ctrl+l", "View session output logs"));
             lines.push(help_line("p", "Pick session (accept, abandon siblings)"));
             lines.push(help_line("x", "Stop running session"));
             lines.push(help_line("r", "Reject session (with optional reason)"));
@@ -1582,6 +1776,13 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let x = area.x + (area.width.saturating_sub(width)) / 2;
 
     Rect::new(x, y, width, height)
+}
+
+fn read_log_lines(path: &std::path::Path) -> Vec<String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => content.lines().map(String::from).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
