@@ -9,8 +9,16 @@ pub fn task_name_completer() -> ArgValueCompleter {
     ArgValueCompleter::new(complete_task_names)
 }
 
+pub fn branch_name_completer() -> ArgValueCompleter {
+    ArgValueCompleter::new(complete_branch_names)
+}
+
 fn complete_task_names(_current: &OsStr) -> Vec<CompletionCandidate> {
     task_name_candidates().unwrap_or_default()
+}
+
+fn complete_branch_names(_current: &OsStr) -> Vec<CompletionCandidate> {
+    branch_name_candidates().unwrap_or_default()
 }
 
 fn task_name_candidates() -> Option<Vec<CompletionCandidate>> {
@@ -34,7 +42,36 @@ fn task_name_candidates() -> Option<Vec<CompletionCandidate>> {
     )
 }
 
-fn detect_project_id(connection: &rusqlite::Connection) -> Option<i64> {
+fn branch_name_candidates() -> Option<Vec<CompletionCandidate>> {
+    let connection = db::open_database().ok()?;
+    db::prepare_schema(&connection).ok()?;
+
+    let project_path = detect_project_path(&connection)?;
+
+    let output = std::process::Command::new("git")
+        .args(["-C", &project_path, "branch", "--format=%(refname:short)"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    Some(
+        stdout
+            .lines()
+            .map(|line| CompletionCandidate::new(line.to_string()))
+            .collect(),
+    )
+}
+
+fn detect_project_path(connection: &rusqlite::Connection) -> Option<String> {
+    let (_, path) = detect_project(connection)?;
+    Some(path)
+}
+
+fn detect_project(connection: &rusqlite::Connection) -> Option<(i64, String)> {
     let cwd = std::env::current_dir().ok()?;
     let cwd = cwd.canonicalize().ok()?;
     let cwd_str = cwd.to_string_lossy();
@@ -55,8 +92,7 @@ fn detect_project_id(connection: &rusqlite::Connection) -> Option<i64> {
 
     let projects: Vec<(i64, String, String)> = rows.filter_map(|r| r.ok()).collect();
 
-    // First: try matching against project repo paths.
-    let mut best_id = None;
+    let mut best: Option<(i64, String)> = None;
     let mut best_len = 0;
 
     for (id, _, path) in &projects {
@@ -65,24 +101,28 @@ fn detect_project_id(connection: &rusqlite::Connection) -> Option<i64> {
             && path.len() > best_len
         {
             best_len = path.len();
-            best_id = Some(*id);
+            best = Some((*id, path.clone()));
         }
     }
 
-    // Second: try matching against managed worktree paths.
-    if best_id.is_none() {
-        for (id, name, _) in &projects {
+    if best.is_none() {
+        for (id, name, path) in &projects {
             let wt_base = crate::paths::project_worktrees_dir(name);
             let wt_base_str = wt_base.to_string_lossy();
             if cwd_str.starts_with(wt_base_str.as_ref())
                 && (cwd_str.len() == wt_base_str.len()
                     || cwd_str.as_bytes()[wt_base_str.len()] == b'/')
             {
-                best_id = Some(*id);
+                best = Some((*id, path.clone()));
                 break;
             }
         }
     }
 
-    best_id
+    best
+}
+
+fn detect_project_id(connection: &rusqlite::Connection) -> Option<i64> {
+    let (id, _) = detect_project(connection)?;
+    Some(id)
 }

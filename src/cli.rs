@@ -197,6 +197,10 @@ pub struct NewArgs {
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
 
+    /// Use an existing branch instead of creating a new one.
+    #[arg(short, long, value_name = "BRANCH", add = completions::branch_name_completer())]
+    pub branch: Option<String>,
+
     /// Project to create the task in.
     #[arg(long, value_name = "NAME")]
     pub project: Option<String>,
@@ -308,6 +312,38 @@ mod tests {
         let cli = Cli::try_parse_from(["work", "new", "my-task"]).unwrap();
         if let Command::New(args) = cli.command {
             assert_eq!(args.name.as_deref(), Some("my-task"));
+        } else {
+            panic!("expected Command::New");
+        }
+    }
+
+    #[test]
+    fn new_parses_with_branch_short() {
+        let cli = Cli::try_parse_from(["work", "new", "-b", "feature-branch"]).unwrap();
+        if let Command::New(args) = cli.command {
+            assert_eq!(args.branch.as_deref(), Some("feature-branch"));
+            assert!(args.name.is_none());
+        } else {
+            panic!("expected Command::New");
+        }
+    }
+
+    #[test]
+    fn new_parses_with_branch_long() {
+        let cli = Cli::try_parse_from(["work", "new", "--branch", "feature-branch"]).unwrap();
+        if let Command::New(args) = cli.command {
+            assert_eq!(args.branch.as_deref(), Some("feature-branch"));
+        } else {
+            panic!("expected Command::New");
+        }
+    }
+
+    #[test]
+    fn new_parses_with_name_and_branch() {
+        let cli = Cli::try_parse_from(["work", "new", "my-task", "-b", "feature-branch"]).unwrap();
+        if let Command::New(args) = cli.command {
+            assert_eq!(args.name.as_deref(), Some("my-task"));
+            assert_eq!(args.branch.as_deref(), Some("feature-branch"));
         } else {
             panic!("expected Command::New");
         }

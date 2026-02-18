@@ -73,6 +73,7 @@ pub struct DetectProjectRequest {
 #[derive(Serialize, Deserialize)]
 pub struct CreateTaskRequest {
     pub name: Option<String>,
+    pub branch: Option<String>,
     pub project: Option<String>,
     pub cwd: String,
 }
@@ -1062,26 +1063,34 @@ fn create_task_inner(
 
     let (project_id, project_name, project_path) =
         detect_project(&conn, req.project.as_deref(), &req.cwd)?;
-    let task_name = req.name.unwrap_or_else(generate_task_name);
+    let task_name = req
+        .name
+        .or_else(|| req.branch.clone())
+        .unwrap_or_else(generate_task_name);
     let worktree_path = paths::worktree_path(&project_name, &task_name);
 
     let adapter = GitWorktreeAdapter;
     let global_cfg = config::load()?;
-    let default_branch =
-        config::effective_default_branch(&global_cfg, &project_name, &project_path);
 
-    let claimed = try_claim_pool(
-        &conn,
-        &adapter,
-        project_id,
-        &project_path,
-        &task_name,
-        &worktree_path,
-        &pool_notify,
-    );
+    if let Some(ref branch) = req.branch {
+        adapter.create_from_branch(&project_path, branch, &worktree_path)?;
+    } else {
+        let default_branch =
+            config::effective_default_branch(&global_cfg, &project_name, &project_path);
 
-    if !claimed {
-        adapter.create(&project_path, &task_name, &worktree_path, &default_branch)?;
+        let claimed = try_claim_pool(
+            &conn,
+            &adapter,
+            project_id,
+            &project_path,
+            &task_name,
+            &worktree_path,
+            &pool_notify,
+        );
+
+        if !claimed {
+            adapter.create(&project_path, &task_name, &worktree_path, &default_branch)?;
+        }
     }
 
     let now = unix_timestamp_seconds()?;
