@@ -52,11 +52,7 @@ pub async fn execute(command: DaemonCommand, logger: Logger) -> Result<(), CliEr
                 kill_pid(pid)?;
                 error::print_success(&format!("stopped daemon (pid {pid})"));
             }
-            if args.detach {
-                daemonize(args.socket)
-            } else {
-                Workd::start(logger, args.socket).await
-            }
+            daemonize(args.socket)
         }
     }
 }

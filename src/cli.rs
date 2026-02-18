@@ -145,14 +145,6 @@ pub struct DaemonRestartArgs {
     /// Override the unix socket path used by the daemon.
     #[arg(long, value_name = "PATH")]
     pub socket: Option<PathBuf>,
-
-    /// Run in the foreground (default).
-    #[arg(long, conflicts_with = "detach")]
-    pub attach: bool,
-
-    /// Daemonize and run in the background.
-    #[arg(long, conflicts_with = "attach")]
-    pub detach: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -460,22 +452,13 @@ mod tests {
     }
 
     #[test]
-    fn daemon_restart_accepts_detach() {
-        let cli = Cli::try_parse_from(["work", "daemon", "restart", "--detach"]).unwrap();
-        if let Command::Daemon {
-            command: DaemonCommand::Restart(args),
-        } = cli.command
-        {
-            assert!(args.detach);
-            assert!(!args.attach);
-        } else {
-            panic!("expected Command::Daemon Restart");
-        }
-    }
-
-    #[test]
-    fn daemon_restart_rejects_attach_and_detach() {
-        let result = Cli::try_parse_from(["work", "daemon", "restart", "--attach", "--detach"]);
-        assert!(result.is_err());
+    fn daemon_restart_parses() {
+        let cli = Cli::try_parse_from(["work", "daemon", "restart"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon {
+                command: DaemonCommand::Restart(_),
+            }
+        ));
     }
 }
