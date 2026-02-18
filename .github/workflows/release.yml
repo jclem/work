@@ -107,6 +107,7 @@ jobs:
         run: |
           mkdir work-aarch64-apple-darwin
           cp target/aarch64-apple-darwin/release/work work-aarch64-apple-darwin/
+          cp LICENSE.md work-aarch64-apple-darwin/
           tar czf work-aarch64-apple-darwin.tar.gz work-aarch64-apple-darwin
 
       - name: Generate checksum

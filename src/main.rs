@@ -41,6 +41,9 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Version => {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
+        Command::License => {
+            print!("{}", include_str!("../LICENSE.md"));
+        }
         Command::Completions { shell } => {
             use clap_complete::env::{self, EnvCompleter};
 

@@ -25,6 +25,9 @@ pub enum Command {
     /// Print the CLI version
     Version,
 
+    /// Print the MIT license
+    License,
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
