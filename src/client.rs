@@ -142,6 +142,7 @@ pub fn create_task(
     name: Option<&str>,
     branch: Option<&str>,
     project: Option<&str>,
+    backend: Option<&str>,
     cwd: &str,
 ) -> Result<CreateTaskResponse, CliError> {
     post_json(
@@ -151,6 +152,7 @@ pub fn create_task(
             branch: branch.map(|s| s.to_string()),
             project: project.map(|s| s.to_string()),
             cwd: cwd.to_string(),
+            backend: backend.map(|s| s.to_string()),
         },
     )
 }

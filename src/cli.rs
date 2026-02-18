@@ -326,6 +326,10 @@ pub struct NewArgs {
     #[arg(long, value_name = "NAME")]
     pub project: Option<String>,
 
+    /// Task backend to use (default: worktree).
+    #[arg(long, value_name = "BACKEND")]
+    pub backend: Option<String>,
+
     /// Don't cd into the new worktree.
     #[arg(long)]
     pub no_cd: bool,

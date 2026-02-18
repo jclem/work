@@ -25,6 +25,7 @@ use crate::adapters::worktree::GitWorktreeAdapter;
 use crate::config;
 use crate::db;
 use crate::error::CliError;
+use crate::extensions;
 use crate::logger::Logger;
 use crate::paths;
 
@@ -79,6 +80,7 @@ pub struct CreateTaskRequest {
     pub branch: Option<String>,
     pub project: Option<String>,
     pub cwd: String,
+    pub backend: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -102,6 +104,7 @@ pub struct TaskInfo {
     pub path: String,
     #[serde(rename = "projectName", skip_serializing_if = "Option::is_none")]
     pub project_name: Option<String>,
+    pub backend: String,
     #[serde(rename = "createdAt")]
     pub created_at: i64,
     #[serde(rename = "updatedAt")]
@@ -493,6 +496,7 @@ struct DeletionTask {
     path: String,
     force: bool,
     project_path: String,
+    backend: String,
 }
 
 async fn deletion_worker(notify: Arc<Notify>, mut shutdown: watch::Receiver<bool>, logger: Logger) {
@@ -560,7 +564,7 @@ fn query_deleting_tasks(logger: &Logger) -> Result<Vec<DeletionTask>, CliError> 
 
     let mut stmt = conn
         .prepare(
-            "SELECT t.id, t.name, t.path, t.deleteForce, p.path \
+            "SELECT t.id, t.name, t.path, t.deleteForce, p.path, t.backend \
              FROM tasks t JOIN projects p ON t.projectId = p.id \
              WHERE t.status = 'deleting'",
         )
@@ -574,6 +578,7 @@ fn query_deleting_tasks(logger: &Logger) -> Result<Vec<DeletionTask>, CliError> 
                 path: row.get(2)?,
                 force: row.get(3)?,
                 project_path: row.get(4)?,
+                backend: row.get(5)?,
             })
         })
         .map_err(|e| CliError::with_source("failed to query deleting tasks", e))?;
@@ -590,16 +595,45 @@ fn query_deleting_tasks(logger: &Logger) -> Result<Vec<DeletionTask>, CliError> 
 }
 
 fn process_deletion(logger: &Logger, task: DeletionTask) {
-    let adapter = GitWorktreeAdapter;
+    if task.backend != "worktree" {
+        let global_cfg = match config::load() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                logger.error(format!(
+                    "failed to load config for {} deletion: {e}",
+                    task.name
+                ));
+                return;
+            }
+        };
 
-    if let Err(e) = adapter.remove(
-        &task.project_path,
-        &task.name,
-        Path::new(&task.path),
-        task.force,
-    ) {
-        logger.error(format!("failed to remove worktree for {}: {e}", task.name));
-        return;
+        let binary = match extensions::resolve_extension(&global_cfg, &task.backend) {
+            Ok(b) => b,
+            Err(e) => {
+                logger.error(format!(
+                    "failed to resolve extension {} for {}: {e}",
+                    task.backend, task.name
+                ));
+                return;
+            }
+        };
+
+        if let Err(e) = extensions::invoke_destroy(&binary, &task.name) {
+            logger.error(format!("extension destroy failed for {}: {e}", task.name));
+            return;
+        }
+    } else {
+        let adapter = GitWorktreeAdapter;
+
+        if let Err(e) = adapter.remove(
+            &task.project_path,
+            &task.name,
+            Path::new(&task.path),
+            task.force,
+        ) {
+            logger.error(format!("failed to remove worktree for {}: {e}", task.name));
+            return;
+        }
     }
 
     match db::open_database() {
@@ -774,6 +808,39 @@ async fn replenish_pools(
         let pool_size = config::effective_pool_size(&global_config, &project.name, &project.path);
 
         if pool_size == 0 {
+            continue;
+        }
+
+        let default_backend = config::effective_default_backend(&global_config, &project.name);
+
+        // For extension backends, delegate warming to the extension itself.
+        if default_backend != "worktree" {
+            if let Ok(binary) = extensions::resolve_extension(&global_config, &default_backend) {
+                let project_name = project.name.clone();
+                let project_path = project.path.clone();
+                let task_logger = logger.clone();
+                let outer_logger = logger.clone();
+
+                let result = tokio::task::spawn_blocking(move || {
+                    match extensions::invoke_warm(&binary, &project_name, &project_path, pool_size)
+                    {
+                        Ok(n) => task_logger.info(format!(
+                            "extension {default_backend} warmed {n} environment(s) for {project_name}"
+                        )),
+                        Err(e) => task_logger.error(format!(
+                            "extension warm failed for {project_name}: {e}"
+                        )),
+                    }
+                })
+                .await;
+
+                if let Err(e) = result {
+                    outer_logger.error(format!(
+                        "extension warm task panicked for {}: {e}",
+                        project.name
+                    ));
+                }
+            }
             continue;
         }
 
@@ -1332,37 +1399,50 @@ fn create_task_inner(
         .name
         .or_else(|| req.branch.clone())
         .unwrap_or_else(generate_task_name);
-    let worktree_path = paths::worktree_path(&project_name, &task_name);
 
-    let adapter = GitWorktreeAdapter;
     let global_cfg = config::load()?;
+    let backend = req
+        .backend
+        .unwrap_or_else(|| config::effective_default_backend(&global_cfg, &project_name));
 
-    if let Some(ref branch) = req.branch {
-        adapter.create_from_branch(&project_path, branch, &worktree_path)?;
+    let task_path_str = if backend != "worktree" {
+        // Extension backend.
+        let binary = extensions::resolve_extension(&global_cfg, &backend)?;
+        let resp = extensions::invoke_create(&binary, &task_name, &project_name, &project_path)?;
+        resp.path
     } else {
-        let default_branch =
-            config::effective_default_branch(&global_cfg, &project_name, &project_path);
+        // Default worktree backend.
+        let worktree_path = paths::worktree_path(&project_name, &task_name);
+        let adapter = GitWorktreeAdapter;
 
-        let claimed = try_claim_pool(
-            &conn,
-            &adapter,
-            project_id,
-            &project_path,
-            &task_name,
-            &worktree_path,
-            &pool_notify,
-        );
+        if let Some(ref branch) = req.branch {
+            adapter.create_from_branch(&project_path, branch, &worktree_path)?;
+        } else {
+            let default_branch =
+                config::effective_default_branch(&global_cfg, &project_name, &project_path);
 
-        if !claimed {
-            adapter.create(&project_path, &task_name, &worktree_path, &default_branch)?;
+            let claimed = try_claim_pool(
+                &conn,
+                &adapter,
+                project_id,
+                &project_path,
+                &task_name,
+                &worktree_path,
+                &pool_notify,
+            );
+
+            if !claimed {
+                adapter.create(&project_path, &task_name, &worktree_path, &default_branch)?;
+            }
         }
-    }
+
+        worktree_path.to_string_lossy().to_string()
+    };
 
     let now = unix_timestamp_seconds()?;
-    let worktree_path_str = worktree_path.to_string_lossy().to_string();
     conn.execute(
-        "INSERT INTO tasks (projectId, name, path, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![project_id, task_name, worktree_path_str, now, now],
+        "INSERT INTO tasks (projectId, name, path, backend, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![project_id, task_name, task_path_str, backend, now, now],
     )
     .map_err(|e| CliError::with_source("failed to create task", e))?;
 
@@ -1375,7 +1455,7 @@ fn create_task_inner(
 
     Ok(CreateTaskResponse {
         name: task_name,
-        path: worktree_path_str,
+        path: task_path_str,
         hook_script,
     })
 }
@@ -1389,7 +1469,7 @@ fn list_tasks_inner(req: ListTasksRequest) -> Result<Vec<TaskInfo>, CliError> {
     if all {
         let mut stmt = conn
             .prepare(
-                "SELECT t.name, t.path, t.createdAt, t.updatedAt, p.name \
+                "SELECT t.name, t.path, t.createdAt, t.updatedAt, p.name, t.backend \
                  FROM tasks t JOIN projects p ON t.projectId = p.id \
                  WHERE t.status = 'active' \
                  ORDER BY p.name, t.name",
@@ -1404,6 +1484,7 @@ fn list_tasks_inner(req: ListTasksRequest) -> Result<Vec<TaskInfo>, CliError> {
                     created_at: row.get(2)?,
                     updated_at: row.get(3)?,
                     project_name: Some(row.get(4)?),
+                    backend: row.get(5)?,
                 })
             })
             .map_err(|e| CliError::with_source("failed to query tasks", e))?;
@@ -1416,7 +1497,7 @@ fn list_tasks_inner(req: ListTasksRequest) -> Result<Vec<TaskInfo>, CliError> {
 
         let mut stmt = conn
             .prepare(
-                "SELECT name, path, createdAt, updatedAt \
+                "SELECT name, path, backend, createdAt, updatedAt \
                  FROM tasks WHERE projectId = ?1 AND status = 'active' ORDER BY name",
             )
             .map_err(|e| CliError::with_source("failed to prepare task query", e))?;
@@ -1426,8 +1507,9 @@ fn list_tasks_inner(req: ListTasksRequest) -> Result<Vec<TaskInfo>, CliError> {
                 Ok(TaskInfo {
                     name: row.get(0)?,
                     path: row.get(1)?,
-                    created_at: row.get(2)?,
-                    updated_at: row.get(3)?,
+                    backend: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
                     project_name: None,
                 })
             })
@@ -1445,11 +1527,11 @@ fn delete_task_inner(req: DeleteTaskRequest) -> Result<(), CliError> {
     let (project_id, _, project_path) = detect_project(&conn, req.project.as_deref(), &req.cwd)?;
     let force = req.force.unwrap_or(false);
 
-    let (task_id, task_path): (i64, String) = conn
+    let (task_id, task_path, backend): (i64, String, String) = conn
         .query_row(
-            "SELECT id, path FROM tasks WHERE projectId = ?1 AND name = ?2 AND status = 'active'",
+            "SELECT id, path, backend FROM tasks WHERE projectId = ?1 AND name = ?2 AND status = 'active'",
             params![project_id, req.name],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|source| match source {
             rusqlite::Error::QueryReturnedNoRows => {
@@ -1458,8 +1540,14 @@ fn delete_task_inner(req: DeleteTaskRequest) -> Result<(), CliError> {
             other => CliError::with_source("failed to look up task", other),
         })?;
 
-    let adapter = GitWorktreeAdapter;
-    adapter.remove(&project_path, &req.name, Path::new(&task_path), force)?;
+    if backend != "worktree" {
+        let global_cfg = config::load()?;
+        let binary = extensions::resolve_extension(&global_cfg, &backend)?;
+        extensions::invoke_destroy(&binary, &req.name)?;
+    } else {
+        let adapter = GitWorktreeAdapter;
+        adapter.remove(&project_path, &req.name, Path::new(&task_path), force)?;
+    }
 
     conn.execute("DELETE FROM tasks WHERE id = ?1", params![task_id])
         .map_err(|e| CliError::with_source("failed to delete task from database", e))?;
@@ -1494,22 +1582,32 @@ fn nuke_inner() -> Result<NukeResponse, CliError> {
     conn.execute("DELETE FROM pool", [])
         .map_err(|e| CliError::with_source("failed to delete pool entries", e))?;
 
-    // Remove task worktrees.
+    // Remove task worktrees/extension tasks.
     let mut stmt = conn
         .prepare(
-            "SELECT t.name, t.path, p.path \
+            "SELECT t.name, t.path, p.path, t.backend \
              FROM tasks t JOIN projects p ON t.projectId = p.id",
         )
         .map_err(|e| CliError::with_source("failed to query tasks", e))?;
 
-    let tasks: Vec<(String, String, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+    let tasks: Vec<(String, String, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
         .map_err(|e| CliError::with_source("failed to query tasks", e))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| CliError::with_source("failed to load tasks", e))?;
 
-    for (task_name, task_path, project_path) in &tasks {
-        adapter.remove(project_path, task_name, Path::new(task_path), true)?;
+    let global_cfg = config::load()?;
+
+    for (task_name, task_path, project_path, backend) in &tasks {
+        if backend != "worktree" {
+            if let Ok(binary) = extensions::resolve_extension(&global_cfg, backend) {
+                let _ = extensions::invoke_destroy(&binary, task_name);
+            }
+        } else {
+            adapter.remove(project_path, task_name, Path::new(task_path), true)?;
+        }
     }
 
     conn.execute("DELETE FROM tasks", [])
