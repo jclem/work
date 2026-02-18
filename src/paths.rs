@@ -1,14 +1,14 @@
 use std::env;
 use std::path::PathBuf;
 
-const APP_DIR: &str = "workd";
+const APP_DIR: &str = "work";
 const SOCKET_FILE: &str = "workd.sock";
 const PID_FILE: &str = "workd.pid";
 const LOG_FILE: &str = "workd.log";
 const DB_FILE: &str = "database.sqlite";
 
 pub fn database_path() -> PathBuf {
-    data_dir().join(DB_FILE)
+    data_dir_root().join(DB_FILE)
 }
 
 pub fn pid_file_path() -> PathBuf {
@@ -31,17 +31,6 @@ pub fn socket_path(socket_override: Option<PathBuf>) -> PathBuf {
     }
 
     runtime_dir().join(SOCKET_FILE)
-}
-
-fn data_dir() -> PathBuf {
-    if let Ok(path) = env::var("XDG_DATA_HOME")
-        && !path.is_empty()
-    {
-        return PathBuf::from(path).join(APP_DIR);
-    }
-
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".local/share").join(APP_DIR)
 }
 
 pub fn config_dir() -> PathBuf {
