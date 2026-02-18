@@ -1,11 +1,10 @@
 use std::io::Write;
 
-use crate::cli::TreeArgs;
 use crate::client;
 use crate::error::CliError;
 use crate::workd::{ProjectInfo, SessionInfo, TaskInfo};
 
-/// A project with its associated tasks (and optionally sessions per task).
+/// A project with its associated tasks and sessions.
 struct ProjectNode {
     project: ProjectInfo,
     tasks: Vec<TaskNode>,
@@ -16,7 +15,7 @@ struct TaskNode {
     sessions: Vec<SessionInfo>,
 }
 
-pub fn run(args: TreeArgs) -> Result<(), CliError> {
+pub fn run() -> Result<(), CliError> {
     let projects = client::list_projects()?;
 
     if projects.is_empty() {
@@ -24,21 +23,15 @@ pub fn run(args: TreeArgs) -> Result<(), CliError> {
         return Ok(());
     }
 
-    // Build the tree: projects -> tasks -> (optional) sessions.
+    // Build the tree: projects -> tasks -> sessions.
     let mut nodes: Vec<ProjectNode> = Vec::new();
 
     for project in projects {
-        if let Some(ref filter) = args.project
-            && project.name != *filter
-        {
-            continue;
-        }
-
         let tasks = client::list_tasks(Some(&project.name), None, false)?;
         let mut task_nodes: Vec<TaskNode> = Vec::new();
 
         for task in tasks {
-            let sessions = if args.sessions {
+            let sessions: Vec<SessionInfo> =
                 client::list_sessions(None, Some(&project.name), None)?
                     .into_iter()
                     .filter(|s| {
@@ -46,10 +39,7 @@ pub fn run(args: TreeArgs) -> Result<(), CliError> {
                             || s.project_name.as_deref() == Some(&project.name)
                                 && task_owns_session(&task, s)
                     })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+                    .collect();
 
             task_nodes.push(TaskNode { task, sessions });
         }
@@ -116,36 +106,34 @@ pub fn run(args: TreeArgs) -> Result<(), CliError> {
             let _ = write!(out, "{task_prefix}{cyan}{}{cyan:#}", task_node.task.name);
             let _ = writeln!(out, "  {dimmed}{}{dimmed:#}", task_node.task.path);
 
-            if args.sessions {
-                let total_sessions = task_node.sessions.len();
-                for (si, session) in task_node.sessions.iter().enumerate() {
-                    let is_last_session = si == total_sessions - 1;
-                    let session_prefix = if is_last_session {
-                        format!("{task_continuation}\u{2514}\u{2500}\u{2500} ")
-                    } else {
-                        format!("{task_continuation}\u{251c}\u{2500}\u{2500} ")
-                    };
+            let total_sessions = task_node.sessions.len();
+            for (si, session) in task_node.sessions.iter().enumerate() {
+                let is_last_session = si == total_sessions - 1;
+                let session_prefix = if is_last_session {
+                    format!("{task_continuation}\u{2514}\u{2500}\u{2500} ")
+                } else {
+                    format!("{task_continuation}\u{251c}\u{2500}\u{2500} ")
+                };
 
-                    let status_style = match session.status.as_str() {
-                        "running" => green,
-                        "stopped" | "rejected" => yellow,
-                        _ => dimmed,
-                    };
+                let status_style = match session.status.as_str() {
+                    "running" => green,
+                    "stopped" | "rejected" => yellow,
+                    _ => dimmed,
+                };
 
-                    let mergeable_str = match session.mergeable {
-                        Some(true) => " \u{2714}",
-                        Some(false) => " \u{2718}",
-                        None => "",
-                    };
+                let mergeable_str = match session.mergeable {
+                    Some(true) => " \u{2714}",
+                    Some(false) => " \u{2718}",
+                    None => "",
+                };
 
-                    let _ = writeln!(
-                        out,
-                        "{session_prefix}session {id} {dimmed}(attempt {att}){dimmed:#} {status_style}{status}{status_style:#}{mergeable_str}",
-                        id = session.id,
-                        att = session.attempt_no,
-                        status = session.status,
-                    );
-                }
+                let _ = writeln!(
+                    out,
+                    "{session_prefix}session {id} {dimmed}(attempt {att}){dimmed:#} {status_style}{status}{status_style:#}{mergeable_str}",
+                    id = session.id,
+                    att = session.attempt_no,
+                    status = session.status,
+                );
             }
         }
     }
