@@ -50,6 +50,7 @@ pub fn config_path() -> PathBuf {
 
 pub fn worktree_path(project_name: &str, task_name: &str) -> PathBuf {
     data_dir_root()
+        .join("projects")
         .join(project_name)
         .join("worktrees")
         .join(task_name)
