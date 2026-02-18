@@ -57,6 +57,9 @@ pub enum Command {
     #[command(alias = "ls")]
     List(ListArgs),
 
+    /// Change directory to a task's worktree.
+    Cd(CdArgs),
+
     /// Delete a task.
     #[command(alias = "rm")]
     Delete(DeleteArgs),
@@ -235,6 +238,17 @@ pub struct DeleteArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct CdArgs {
+    /// Task name.
+    #[arg(value_name = "NAME", add = completions::task_name_completer())]
+    pub name: String,
+
+    /// Project the task belongs to.
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct NukeArgs {
     /// Skip confirmation prompt.
     #[arg(long)]
@@ -305,6 +319,22 @@ mod tests {
     #[test]
     fn list_rejects_conflicting_output_flags() {
         let result = Cli::try_parse_from(["work", "list", "--json", "--plain"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cd_parses_with_name() {
+        let cli = Cli::try_parse_from(["work", "cd", "my-task"]).unwrap();
+        if let Command::Cd(args) = cli.command {
+            assert_eq!(args.name, "my-task");
+        } else {
+            panic!("expected Command::Cd");
+        }
+    }
+
+    #[test]
+    fn cd_requires_name() {
+        let result = Cli::try_parse_from(["work", "cd"]);
         assert!(result.is_err());
     }
 

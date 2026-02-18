@@ -1,6 +1,6 @@
 use std::io::IsTerminal;
 
-use crate::cli::{self, DeleteArgs, ListArgs, NewArgs};
+use crate::cli::{self, CdArgs, DeleteArgs, ListArgs, NewArgs};
 use crate::client;
 use crate::error::{self, CliError};
 
@@ -43,6 +43,23 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
         shell_eval(&format!("cd \"{}\"", resp.path));
     }
 
+    Ok(())
+}
+
+pub fn cd(args: CdArgs) -> Result<(), CliError> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| CliError::with_source("failed to read current directory", e))?
+        .canonicalize()
+        .map_err(|e| CliError::with_source("failed to canonicalize current directory", e))?;
+    let cwd_str = cwd.to_string_lossy().to_string();
+
+    let tasks = client::list_tasks(args.project.as_deref(), Some(&cwd_str), false)?;
+
+    let task = tasks.iter().find(|t| t.name == args.name).ok_or_else(|| {
+        CliError::with_hint("task not found", "Run `work list` to see available tasks.")
+    })?;
+
+    shell_eval(&format!("cd \"{}\"", task.path));
     Ok(())
 }
 
