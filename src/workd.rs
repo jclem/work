@@ -389,6 +389,10 @@ impl Workd {
             self.logger.clone(),
         ));
 
+        // Spawn background pool-pull worker.
+        let pool_pull_handle =
+            tokio::spawn(pool_pull_worker(shutdown_rx.clone(), self.logger.clone()));
+
         let session_pids: Arc<Mutex<HashMap<i64, u32>>> = Arc::new(Mutex::new(HashMap::new()));
 
         // Spawn background session worker.
@@ -446,7 +450,7 @@ impl Workd {
 
         tokio::select! {
             _ = async {
-                let _ = tokio::join!(deletion_handle, pool_handle, session_handle);
+                let _ = tokio::join!(deletion_handle, pool_handle, pool_pull_handle, session_handle);
             } => {}
             _ = force_shutdown_signal(self.logger.clone()) => {
                 self.logger.info("forced shutdown");
@@ -970,6 +974,177 @@ fn generate_pool_temp_name() -> String {
     let mut rng = rand::thread_rng();
     let hex: u32 = rng.r#gen();
     format!("__pool-{hex:08x}")
+}
+
+// ---------------------------------------------------------------------------
+// Background pool-pull worker
+// ---------------------------------------------------------------------------
+
+/// Periodically pulls the default branch into pool worktrees so that users get
+/// an up-to-date starting point when they claim one. Pool entries are locked
+/// (via `lockedAt`) during the pull so that `try_claim_pool` skips them.
+async fn pool_pull_worker(mut shutdown: watch::Receiver<bool>, logger: Logger) {
+    let logger = logger.child("poolPullWorker");
+
+    loop {
+        let cfg = config::load().ok().and_then(|c| c.daemon);
+        let enabled = cfg.as_ref().is_some_and(|d| d.pool_pull_enabled);
+        let interval_secs = cfg.as_ref().map_or(3600, |d| d.pool_pull_interval);
+
+        if !enabled {
+            // Feature is off — sleep for the configured interval then re-check
+            // in case the user enables it later.
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
+                _ = shutdown.changed() => {
+                    logger.info("shutdown received");
+                    return;
+                }
+            }
+            continue;
+        }
+
+        // Resource gating: skip if the system is under pressure.
+        let max_load_frac = cfg.as_ref().map_or(0.7, |d| d.pool_max_load);
+        let min_memory_pct = cfg.as_ref().map_or(10.0, |d| d.pool_min_memory_pct);
+        let (load_ok, mem_ok) = check_system_resources(max_load_frac, min_memory_pct);
+        if !load_ok || !mem_ok {
+            if !load_ok {
+                logger.info("skipping pool pull: system load too high");
+            }
+            if !mem_ok {
+                logger.info("skipping pool pull: available memory too low");
+            }
+        } else if let Err(e) = pull_pool_worktrees(&logger, &mut shutdown).await {
+            logger.error(format!("pool pull failed: {e}"));
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {
+                logger.info("periodic pool pull");
+            }
+            _ = shutdown.changed() => {
+                logger.info("shutdown received");
+                return;
+            }
+        }
+    }
+}
+
+/// A pool entry eligible for pulling.
+struct PoolPullEntry {
+    id: i64,
+    path: String,
+    project_name: String,
+    project_path: String,
+}
+
+/// Pull the default branch into every pool worktree, locking each one while
+/// the pull is in progress so that it isn't claimed mid-update.
+async fn pull_pool_worktrees(
+    logger: &Logger,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), CliError> {
+    let global_config = config::load()?;
+
+    let entries: Vec<PoolPullEntry> = {
+        let logger = logger.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = db::open_database()?;
+            db::prepare_schema(&conn)?;
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT po.id, po.path, p.name, p.path \
+                     FROM pool po JOIN projects p ON po.projectId = p.id \
+                     WHERE po.lockedAt IS NULL",
+                )
+                .map_err(|e| CliError::with_source("failed to query pool entries for pull", e))?;
+
+            let rows: Vec<PoolPullEntry> = stmt
+                .query_map([], |row| {
+                    Ok(PoolPullEntry {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        project_name: row.get(2)?,
+                        project_path: row.get(3)?,
+                    })
+                })
+                .map_err(|e| CliError::with_source("failed to query pool entries for pull", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| CliError::with_source("failed to load pool entries for pull", e))?;
+
+            logger.info(format!("found {} pool worktree(s) to pull", rows.len()));
+            Ok(rows)
+        })
+        .await
+        .map_err(|e| CliError::new(format!("query pool pull entries task panicked: {e}")))?
+    }?;
+
+    for entry in &entries {
+        if *shutdown.borrow() {
+            logger.info("shutdown during pool pull, stopping");
+            return Ok(());
+        }
+
+        let default_branch = config::effective_default_branch(
+            &global_config,
+            &entry.project_name,
+            &entry.project_path,
+        );
+
+        let pool_id = entry.id;
+        let worktree_path = entry.path.clone();
+        let logger_clone = logger.clone();
+        let default_branch_clone = default_branch.clone();
+        let project_name = entry.project_name.clone();
+
+        // Lock the entry before pulling.
+        tokio::task::spawn_blocking(move || -> Result<(), CliError> {
+            let conn = db::open_database()?;
+            db::prepare_schema(&conn)?;
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| CliError::with_source("system clock error", e))?
+                .as_secs() as i64;
+
+            conn.execute(
+                "UPDATE pool SET lockedAt = ?1 WHERE id = ?2",
+                params![now, pool_id],
+            )
+            .map_err(|e| CliError::with_source("failed to lock pool entry", e))?;
+
+            let adapter = GitWorktreeAdapter;
+            let wt_path = Path::new(&worktree_path);
+            match adapter.pull(wt_path, &default_branch_clone) {
+                Ok(()) => {
+                    logger_clone.info(format!(
+                        "pulled pool worktree for {project_name} at {worktree_path}"
+                    ));
+                }
+                Err(e) => {
+                    logger_clone.error(format!(
+                        "pull failed for pool worktree {worktree_path}: {e}"
+                    ));
+                }
+            }
+
+            // Unlock regardless of success or failure.
+            conn.execute(
+                "UPDATE pool SET lockedAt = NULL WHERE id = ?1",
+                params![pool_id],
+            )
+            .map_err(|e| CliError::with_source("failed to unlock pool entry", e))?;
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| CliError::new(format!("pool pull task panicked: {e}")))?
+        .ok(); // Log errors but continue to next entry.
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2718,7 +2893,7 @@ fn try_claim_pool(
 ) -> bool {
     let result: Result<(i64, String, String), _> = connection.query_row(
         "DELETE FROM pool WHERE id = (
-            SELECT id FROM pool WHERE projectId = ?1 ORDER BY createdAt ASC LIMIT 1
+            SELECT id FROM pool WHERE projectId = ?1 AND lockedAt IS NULL ORDER BY createdAt ASC LIMIT 1
         ) RETURNING id, tempName, path",
         params![project_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),

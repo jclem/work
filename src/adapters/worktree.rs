@@ -8,6 +8,31 @@ use super::TaskAdapter;
 pub struct GitWorktreeAdapter;
 
 impl GitWorktreeAdapter {
+    /// Pull the default branch into a pool worktree so it stays up-to-date.
+    ///
+    /// Runs `git -C <worktree> pull --ff-only origin <default_branch>` which
+    /// fast-forwards the local branch to match the remote. If the pull cannot
+    /// fast-forward (e.g. diverged history) the error is propagated so the
+    /// caller can log it and move on.
+    pub fn pull(&self, worktree_path: &Path, default_branch: &str) -> Result<(), CliError> {
+        let output = Command::new("git")
+            .args(["-C"])
+            .arg(worktree_path)
+            .args(["pull", "--ff-only", "origin", default_branch])
+            .output()
+            .map_err(|source| CliError::with_source("failed to run git pull", source))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(CliError::new(format!(
+                "git pull --ff-only failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Claim a pre-warmed pool worktree by renaming the branch and moving the worktree.
     pub fn claim_pooled(
         &self,

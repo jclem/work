@@ -37,6 +37,10 @@ fn default_poll_interval() -> u64 {
     300
 }
 
+fn default_pool_pull_interval() -> u64 {
+    3600
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DaemonConfig {
     #[serde(rename = "pool-max-load", default = "default_max_load")]
@@ -45,6 +49,12 @@ pub struct DaemonConfig {
     pub pool_min_memory_pct: f64,
     #[serde(rename = "pool-poll-interval", default = "default_poll_interval")]
     pub pool_poll_interval: u64,
+    /// When true, pool worktrees are periodically pulled to stay up-to-date.
+    #[serde(rename = "pool-pull-enabled", default)]
+    pub pool_pull_enabled: bool,
+    /// Seconds between pool pull cycles (default 3600 = 1 hour).
+    #[serde(rename = "pool-pull-interval", default = "default_pool_pull_interval")]
+    pub pool_pull_interval: u64,
 }
 
 #[derive(Debug, Deserialize)]
