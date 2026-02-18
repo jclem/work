@@ -198,7 +198,7 @@ pub struct NewArgs {
     pub name: Option<String>,
 
     /// Use an existing branch instead of creating a new one.
-    #[arg(short, long, value_name = "BRANCH")]
+    #[arg(short, long, value_name = "BRANCH", add = completions::branch_name_completer())]
     pub branch: Option<String>,
 
     /// Project to create the task in.
