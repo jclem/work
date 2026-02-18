@@ -11,6 +11,19 @@ use crate::workd::Workd;
 pub async fn execute(command: DaemonCommand, logger: Logger) -> Result<(), CliError> {
     match command {
         DaemonCommand::Start(args) => {
+            if let Ok(pid) = read_pid() {
+                if is_process_alive(pid) {
+                    if args.force {
+                        kill_pid(pid)?;
+                    } else {
+                        return Err(CliError::with_hint(
+                            format!("daemon is already running (pid {pid})"),
+                            "use `work daemon start --force` to replace it",
+                        ));
+                    }
+                }
+            }
+
             if args.attach {
                 Workd::start(logger, args.socket).await
             } else {
@@ -101,6 +114,16 @@ fn read_pid() -> Result<u32, CliError> {
         .trim()
         .parse::<u32>()
         .map_err(|_| CliError::new("invalid PID file contents"))
+}
+
+fn is_process_alive(pid: u32) -> bool {
+    // kill -0 checks if the process exists without sending a signal.
+    process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(process::Stdio::null())
+        .stderr(process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 fn kill_pid(pid: u32) -> Result<(), CliError> {

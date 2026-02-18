@@ -97,6 +97,10 @@ pub struct DaemonStartArgs {
     /// Run in the foreground instead of daemonizing.
     #[arg(long)]
     pub attach: bool,
+
+    /// Replace an already-running daemon.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]
