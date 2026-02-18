@@ -8,6 +8,7 @@ mod db;
 mod error;
 mod logger;
 mod paths;
+mod tui;
 mod workd;
 
 use clap::{CommandFactory, Parser};
@@ -92,6 +93,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Config { command } => config_command::execute(command)?,
         Command::Session { command } => sessions_command::execute(command)?,
         Command::Doctor => doctor_command::run()?,
+        Command::Tui => tui::run()?,
     }
 
     Ok(())

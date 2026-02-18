@@ -91,6 +91,10 @@ pub enum Command {
 
     /// Check the health of the work system.
     Doctor,
+
+    /// Launch the interactive TUI dashboard.
+    #[command(alias = "ui")]
+    Tui,
 }
 
 #[derive(Debug, Subcommand)]

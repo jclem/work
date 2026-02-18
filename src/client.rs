@@ -263,6 +263,30 @@ pub fn delete_session(id: i64) -> Result<(), CliError> {
 }
 
 // ---------------------------------------------------------------------------
+// Daemon operations
+// ---------------------------------------------------------------------------
+
+pub fn stop_daemon() -> Result<(), CliError> {
+    let pid_path = paths::pid_file_path();
+    let content = std::fs::read_to_string(&pid_path).map_err(|_| daemon_error())?;
+    let pid: u32 = content
+        .trim()
+        .parse()
+        .map_err(|_| CliError::new("invalid PID file contents"))?;
+
+    let status = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status()
+        .map_err(|e| CliError::with_source("failed to execute kill", e))?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&pid_path);
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Fire-and-forget notifications (internal daemon triggers)
 // ---------------------------------------------------------------------------
 
