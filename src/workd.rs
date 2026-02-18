@@ -6,8 +6,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use rand::Rng;
@@ -30,6 +31,7 @@ use crate::paths;
 struct AppState {
     deletion_notify: Arc<Notify>,
     pool_notify: Arc<Notify>,
+    logger: Logger,
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +112,12 @@ pub struct NukeResponse {
     #[serde(rename = "poolWorktrees")]
     pub pool_worktrees: usize,
     pub projects: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ClearPoolResponse {
+    #[serde(rename = "poolWorktrees")]
+    pub pool_worktrees: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +265,7 @@ impl Workd {
         let state = AppState {
             deletion_notify,
             pool_notify,
+            logger: self.logger.clone(),
         };
 
         let app = Router::new()
@@ -264,6 +273,7 @@ impl Workd {
             .route("/healthz", get(healthz))
             .route("/tasks/process-deletions", post(process_deletions))
             .route("/pool/replenish", post(pool_replenish))
+            .route("/pool/clear", post(handle_clear_pool))
             .route("/projects/create", post(handle_create_project))
             .route("/projects/list", post(handle_list_projects))
             .route("/projects/delete", post(handle_delete_project))
@@ -271,6 +281,10 @@ impl Workd {
             .route("/tasks/list", post(handle_list_tasks))
             .route("/tasks/delete", post(handle_delete_task))
             .route("/tasks/nuke", post(handle_nuke))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_logger,
+            ))
             .with_state(state);
 
         axum::serve(listener, app)
@@ -487,9 +501,104 @@ async fn pool_worker(notify: Arc<Notify>, mut shutdown: watch::Receiver<bool>, l
             }
         }
 
+        if let Err(e) = process_pool_jobs(&logger).await {
+            logger.error(format!("pool job processing failed: {e}"));
+        }
+
         if let Err(e) = replenish_pools(&logger, &mut shutdown).await {
             logger.error(format!("pool replenishment failed: {e}"));
         }
+    }
+}
+
+async fn process_pool_jobs(logger: &Logger) -> Result<(), CliError> {
+    let job_ids = {
+        let logger = logger.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = db::open_database()?;
+            db::prepare_schema(&conn)?;
+
+            let mut stmt = conn
+                .prepare("SELECT id FROM jobs WHERE kind = 'clear_pool' ORDER BY createdAt ASC")
+                .map_err(|e| CliError::with_source("failed to query pool jobs", e))?;
+
+            let ids: Vec<i64> = stmt
+                .query_map([], |row| row.get(0))
+                .map_err(|e| CliError::with_source("failed to query pool jobs", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| CliError::with_source("failed to load pool jobs", e))?;
+
+            if !ids.is_empty() {
+                logger.info(format!("found {} clear_pool job(s)", ids.len()));
+            }
+
+            Ok(ids)
+        })
+        .await
+        .map_err(|e| CliError::new(format!("query pool jobs task panicked: {e}")))?
+    }?;
+
+    for job_id in job_ids {
+        let logger = logger.clone();
+        tokio::task::spawn_blocking(move || {
+            process_clear_pool_job(&logger, job_id);
+        })
+        .await
+        .map_err(|e| CliError::new(format!("clear_pool job task panicked: {e}")))?;
+    }
+
+    Ok(())
+}
+
+fn process_clear_pool_job(logger: &Logger, job_id: i64) {
+    let conn = match db::open_database() {
+        Ok(c) => c,
+        Err(e) => {
+            logger.error(format!("failed to open database for clear_pool job: {e}"));
+            return;
+        }
+    };
+
+    if let Err(e) = db::prepare_schema(&conn) {
+        logger.error(format!("failed to prepare schema for clear_pool job: {e}"));
+        return;
+    }
+
+    let adapter = GitWorktreeAdapter;
+
+    let entries: Vec<(i64, String, String, String)> = match conn.prepare(
+        "SELECT po.id, po.tempName, po.path, p.path \
+         FROM pool po JOIN projects p ON po.projectId = p.id",
+    ) {
+        Ok(mut stmt) => match stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(e) => {
+                logger.error(format!("failed to query pool entries: {e}"));
+                return;
+            }
+        },
+        Err(e) => {
+            logger.error(format!("failed to prepare pool query: {e}"));
+            return;
+        }
+    };
+
+    for (pool_id, temp_name, pool_path, project_path) in &entries {
+        let _ = adapter.remove(project_path, temp_name, Path::new(pool_path), true);
+        if let Err(e) = conn.execute("DELETE FROM pool WHERE id = ?1", params![pool_id]) {
+            logger.error(format!(
+                "failed to delete pool entry {temp_name} from database: {e}"
+            ));
+        } else {
+            logger.info(format!("cleared pool entry {temp_name}"));
+        }
+    }
+
+    match conn.execute("DELETE FROM jobs WHERE id = ?1", params![job_id]) {
+        Ok(_) => logger.info(format!("completed clear_pool job {job_id}")),
+        Err(e) => logger.error(format!("failed to delete job {job_id}: {e}")),
     }
 }
 
@@ -716,6 +825,27 @@ fn generate_pool_temp_name() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Request logging middleware
+// ---------------------------------------------------------------------------
+
+async fn request_logger(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> impl IntoResponse {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let start = Instant::now();
+    let response = next.run(req).await;
+    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let status = response.status().as_u16();
+    state
+        .logger
+        .info(format!("{method} {path} {status} ({elapsed_ms:.1}ms)"));
+    response
+}
+
+// ---------------------------------------------------------------------------
 // HTTP handlers
 // ---------------------------------------------------------------------------
 
@@ -783,6 +913,14 @@ async fn handle_delete_task(
 
 async fn handle_nuke() -> Result<Json<NukeResponse>, ApiError> {
     Ok(Json(run_blocking(nuke_inner).await?))
+}
+
+async fn handle_clear_pool(
+    State(state): State<AppState>,
+) -> Result<Json<ClearPoolResponse>, ApiError> {
+    let resp = run_blocking(clear_pool_inner).await?;
+    state.pool_notify.notify_one();
+    Ok(Json(resp))
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,6 +1213,26 @@ fn nuke_inner() -> Result<NukeResponse, CliError> {
         tasks: tasks.len(),
         pool_worktrees: pool_entries.len(),
         projects: deleted_projects,
+    })
+}
+
+fn clear_pool_inner() -> Result<ClearPoolResponse, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let count: usize = conn
+        .query_row("SELECT COUNT(*) FROM pool", [], |row| row.get(0))
+        .map_err(|e| CliError::with_source("failed to count pool entries", e))?;
+
+    let now = unix_timestamp_seconds()?;
+    conn.execute(
+        "INSERT INTO jobs (kind, createdAt) VALUES ('clear_pool', ?1)",
+        params![now],
+    )
+    .map_err(|e| CliError::with_source("failed to create clear_pool job", e))?;
+
+    Ok(ClearPoolResponse {
+        pool_worktrees: count,
     })
 }
 
