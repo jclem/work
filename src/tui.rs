@@ -1180,7 +1180,7 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
 
             let issue = truncate_str(&s.issue_ref, 30);
 
-            let line = Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("{:>3}", s.id), Style::default().fg(Color::DarkGray)),
                 Span::raw(" "),
                 Span::styled(
@@ -1190,7 +1190,17 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
                 mergeable,
                 Span::raw("  "),
                 Span::styled(issue, Style::default().fg(Color::White)),
-            ]);
+            ];
+
+            if let Some(ref name) = s.project_name {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    name.as_str(),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
+            let line = Line::from(spans);
             ListItem::new(line)
         })
         .collect();
@@ -1219,6 +1229,13 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
             Line::from(vec![
                 Span::styled("ID:       ", Style::default().fg(Color::DarkGray)),
                 Span::styled(session.id.to_string(), Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled("Project:  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    session.project_name.as_deref().unwrap_or("—"),
+                    Style::default().fg(Color::White),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Issue:    ", Style::default().fg(Color::DarkGray)),
@@ -1495,6 +1512,13 @@ fn render_session_detail(f: &mut Frame, detail: &SessionDetail, area: Rect) {
         Line::from(vec![
             Span::styled("Session ", Style::default().fg(Color::DarkGray)),
             Span::styled(s.id.to_string(), Style::default().fg(Color::Cyan).bold()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Project:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                s.project_name.as_deref().unwrap_or("—"),
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Issue:     ", Style::default().fg(Color::DarkGray)),
