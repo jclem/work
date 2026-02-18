@@ -1,8 +1,10 @@
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
+use std::path::Path;
 
 use crate::cli::{
-    SessionCommand, SessionDeleteArgs, SessionListArgs, SessionOpenArgs, SessionPickArgs,
-    SessionRankArgs, SessionRejectArgs, SessionShowArgs, SessionStartArgs, SessionStopArgs,
+    SessionCommand, SessionDeleteArgs, SessionListArgs, SessionLogsArgs, SessionOpenArgs,
+    SessionPickArgs, SessionRankArgs, SessionRejectArgs, SessionShowArgs, SessionStartArgs,
+    SessionStopArgs,
 };
 use crate::client;
 use crate::error::{self, CliError};
@@ -19,6 +21,7 @@ pub fn execute(command: SessionCommand) -> Result<(), CliError> {
         SessionCommand::Stop(args) => stop(args),
         SessionCommand::Delete(args) => delete(args),
         SessionCommand::Open(args) => open(args),
+        SessionCommand::Logs(args) => logs(args),
     }
 }
 
@@ -255,6 +258,48 @@ fn stop(args: SessionStopArgs) -> Result<(), CliError> {
 fn delete(args: SessionDeleteArgs) -> Result<(), CliError> {
     client::delete_session(args.id)?;
     error::print_success(&format!("Session {} deleted.", args.id));
+    Ok(())
+}
+
+fn logs(args: SessionLogsArgs) -> Result<(), CliError> {
+    let resp = client::show_session(args.id)?;
+    let task_path = resp
+        .session
+        .task_path
+        .ok_or_else(|| CliError::new("session has no associated worktree"))?;
+
+    let log_path = Path::new(&task_path).join(".work/session-output.log");
+
+    if !log_path.exists() {
+        return Err(CliError::with_hint(
+            "no output log found for this session",
+            "the session may not have started yet",
+        ));
+    }
+
+    if args.follow {
+        // Use `tail -f` for live following — this hands off control to the
+        // child process and naturally streams until the user interrupts or
+        // the file stops growing.
+        let status = std::process::Command::new("tail")
+            .args(["-f", &log_path.to_string_lossy()])
+            .status()
+            .map_err(|e| CliError::with_source("failed to run tail", e))?;
+
+        if !status.success() {
+            return Err(CliError::new("tail exited with a non-zero status"));
+        }
+    } else {
+        let file = std::fs::File::open(&log_path)
+            .map_err(|e| CliError::with_source("failed to open output log", e))?;
+        let reader = io::BufReader::new(file);
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        io::copy(&mut io::BufReader::new(reader), &mut out)
+            .map_err(|e| CliError::with_source("failed to read output log", e))?;
+        let _ = out.flush();
+    }
+
     Ok(())
 }
 

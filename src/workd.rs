@@ -2456,24 +2456,23 @@ async fn run_agent_session(
     let work_dir = Path::new(&task_path).join(".work");
     let _ = std::fs::create_dir_all(&work_dir);
 
-    // Open log files for agent stdout/stderr.
-    let stdout_path = work_dir.join("session-stdout.log");
-    let stderr_path = work_dir.join("session-stderr.log");
-    let stdout_file = match std::fs::File::create(&stdout_path) {
+    // Open a single combined log file for agent stdout and stderr.
+    let output_path = work_dir.join("session-output.log");
+    let output_file = match std::fs::File::create(&output_path) {
         Ok(f) => f,
         Err(e) => {
             logger.error(format!(
-                "failed to create stdout log for session {session_id}: {e}"
+                "failed to create output log for session {session_id}: {e}"
             ));
             let _ = update_session_status(session_id, "failed");
             return;
         }
     };
-    let stderr_file = match std::fs::File::create(&stderr_path) {
+    let stderr_file = match output_file.try_clone() {
         Ok(f) => f,
         Err(e) => {
             logger.error(format!(
-                "failed to create stderr log for session {session_id}: {e}"
+                "failed to clone output log handle for session {session_id}: {e}"
             ));
             let _ = update_session_status(session_id, "failed");
             return;
@@ -2485,7 +2484,7 @@ async fn run_agent_session(
         .args(&resolved_args[1..])
         .current_dir(&task_path)
         .stdin(std::process::Stdio::null())
-        .stdout(stdout_file)
+        .stdout(output_file)
         .stderr(stderr_file)
         .env("WORK_SESSION_ID", session_id.to_string())
         .env("WORK_SESSION_ISSUE", &session.issue_ref)
