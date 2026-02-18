@@ -29,7 +29,19 @@ run = [
 ]
 
 [tasks."release:github"]
-run = "gh workflow run release.yml --field bump={{arg(name='bump', usage='patch, minor, or major')}}"
+run = """
+PREV_RUN_ID=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+gh workflow run release.yml --field bump={{arg(name='bump', usage='patch, minor, or major')}}
+if [ "{{flag(name='watch')}}" = "true" ]; then
+  echo "Waiting for workflow run to start..."
+  NEW_RUN_ID="$PREV_RUN_ID"
+  while [ "$NEW_RUN_ID" = "$PREV_RUN_ID" ] || [ -z "$NEW_RUN_ID" ]; do
+    sleep 1
+    NEW_RUN_ID=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+  done
+  gh run watch "$NEW_RUN_ID"
+fi
+"""
 
 [tasks."agents:sync"]
 run = ".agents/sync.sh"
