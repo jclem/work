@@ -16,6 +16,7 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
         args.name.as_deref(),
         args.branch.as_deref(),
         args.project.as_deref(),
+        args.backend.as_deref(),
         &cwd_str,
     )?;
 
@@ -66,6 +67,16 @@ pub fn cd(args: CdArgs) -> Result<(), CliError> {
                 CliError::with_hint("task not found", "Run `work list` to see available tasks.")
             })?;
 
+            if task.backend != "worktree" {
+                return Err(CliError::with_hint(
+                    format!(
+                        "task '{}' uses the {} backend and has no local path",
+                        name, task.backend
+                    ),
+                    "only worktree-backed tasks support `work cd`",
+                ));
+            }
+
             shell_eval(&format!("cd \"{}\"", task.path));
         }
         None => {
@@ -100,10 +111,21 @@ pub fn list(args: ListArgs) -> Result<(), CliError> {
         return Ok(());
     }
 
+    let has_non_worktree = tasks.iter().any(|t| t.backend != "worktree");
+
     if args.plain {
         for task in &tasks {
             if let Some(ref project) = task.project_name {
-                println!("{}\t{}\t{}", project, task.name, task.path);
+                if has_non_worktree {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        project, task.name, task.backend, task.path
+                    );
+                } else {
+                    println!("{}\t{}\t{}", project, task.name, task.path);
+                }
+            } else if has_non_worktree {
+                println!("{}\t{}\t{}", task.name, task.backend, task.path);
             } else {
                 println!("{}\t{}", task.name, task.path);
             }
@@ -118,25 +140,62 @@ pub fn list(args: ListArgs) -> Result<(), CliError> {
         let name_width = tasks
             .iter()
             .fold("NAME".len(), |max, t| max.max(t.name.len()));
-        println!(
-            "{:<project_width$}  {:<name_width$}  PATH",
-            "PROJECT", "NAME"
-        );
-        for task in &tasks {
+
+        if has_non_worktree {
+            let backend_width = tasks
+                .iter()
+                .fold("BACKEND".len(), |max, t| max.max(t.backend.len()));
             println!(
-                "{:<project_width$}  {:<name_width$}  {}",
-                task.project_name.as_deref().unwrap_or(""),
-                task.name,
-                task.path
+                "{:<project_width$}  {:<name_width$}  {:<backend_width$}  PATH",
+                "PROJECT", "NAME", "BACKEND"
             );
+            for task in &tasks {
+                println!(
+                    "{:<project_width$}  {:<name_width$}  {:<backend_width$}  {}",
+                    task.project_name.as_deref().unwrap_or(""),
+                    task.name,
+                    task.backend,
+                    task.path
+                );
+            }
+        } else {
+            println!(
+                "{:<project_width$}  {:<name_width$}  PATH",
+                "PROJECT", "NAME"
+            );
+            for task in &tasks {
+                println!(
+                    "{:<project_width$}  {:<name_width$}  {}",
+                    task.project_name.as_deref().unwrap_or(""),
+                    task.name,
+                    task.path
+                );
+            }
         }
     } else {
         let name_width = tasks
             .iter()
             .fold("NAME".len(), |max, t| max.max(t.name.len()));
-        println!("{:<name_width$}  PATH", "NAME");
-        for task in &tasks {
-            println!("{:<name_width$}  {}", task.name, task.path);
+
+        if has_non_worktree {
+            let backend_width = tasks
+                .iter()
+                .fold("BACKEND".len(), |max, t| max.max(t.backend.len()));
+            println!(
+                "{:<name_width$}  {:<backend_width$}  PATH",
+                "NAME", "BACKEND"
+            );
+            for task in &tasks {
+                println!(
+                    "{:<name_width$}  {:<backend_width$}  {}",
+                    task.name, task.backend, task.path
+                );
+            }
+        } else {
+            println!("{:<name_width$}  PATH", "NAME");
+            for task in &tasks {
+                println!("{:<name_width$}  {}", task.name, task.path);
+            }
         }
     }
 

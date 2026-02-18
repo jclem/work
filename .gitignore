@@ -6,3 +6,6 @@ target
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Local extension scripts
+.extensions

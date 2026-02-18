@@ -9,10 +9,16 @@ use crate::paths;
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     pub projects: Option<HashMap<String, ProjectConfig>>,
+    pub extensions: Option<HashMap<String, ExtensionConfig>>,
     pub daemon: Option<DaemonConfig>,
     pub orchestrator: Option<OrchestratorConfig>,
     #[serde(rename = "default-branch")]
     pub default_branch: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExtensionConfig {
+    pub binary: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -23,6 +29,8 @@ pub struct ProjectConfig {
     pub pool_size: Option<u32>,
     #[serde(rename = "default-branch")]
     pub default_branch: Option<String>,
+    #[serde(rename = "default-backend")]
+    pub default_backend: Option<String>,
 }
 
 fn default_max_load() -> f64 {
@@ -235,6 +243,19 @@ pub fn effective_max_sessions_per_issue(global_config: &Config) -> u32 {
         .unwrap_or(5)
 }
 
+/// Returns the effective default backend for a project. Checks global
+/// per-project config. Returns "worktree" if nothing is configured.
+pub fn effective_default_backend(global_config: &Config, project_name: &str) -> String {
+    if let Some(projects) = &global_config.projects
+        && let Some(project_cfg) = projects.get(project_name)
+        && let Some(backend) = &project_cfg.default_backend
+    {
+        return backend.clone();
+    }
+
+    "worktree".to_string()
+}
+
 pub fn hook_script<'a>(config: &'a Config, project_name: &str, hook_name: &str) -> Option<&'a str> {
     let projects = config.projects.as_ref()?;
     let project = projects.get(project_name)?;
@@ -335,6 +356,38 @@ echo "hello"
     fn project_hook_script_returns_none_without_hooks() {
         let project = ProjectConfig::default();
         assert!(project_hook_script(&project, "new-after").is_none());
+    }
+
+    #[test]
+    fn effective_default_backend_returns_worktree_when_unset() {
+        let config = Config::default();
+        assert_eq!(effective_default_backend(&config, "my-project"), "worktree");
+    }
+
+    #[test]
+    fn effective_default_backend_returns_configured_value() {
+        let config = Config {
+            projects: Some(HashMap::from([(
+                "my-project".to_string(),
+                ProjectConfig {
+                    default_backend: Some("boxy".to_string()),
+                    ..ProjectConfig::default()
+                },
+            )])),
+            ..Config::default()
+        };
+        assert_eq!(effective_default_backend(&config, "my-project"), "boxy");
+    }
+
+    #[test]
+    fn deserialize_extension_config() {
+        let toml_str = r#"
+[extensions.boxy]
+binary = "/usr/local/bin/work-ext-boxy"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let extensions = config.extensions.unwrap();
+        assert_eq!(extensions["boxy"].binary, "/usr/local/bin/work-ext-boxy");
     }
 
     #[test]

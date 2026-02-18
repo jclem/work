@@ -98,6 +98,7 @@ pub fn prepare_schema(connection: &Connection) -> Result<(), CliError> {
         "ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
         "ALTER TABLE tasks ADD COLUMN deleteForce INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE sessions ADD COLUMN pid INTEGER",
+        "ALTER TABLE tasks ADD COLUMN backend TEXT NOT NULL DEFAULT 'worktree'",
     ] {
         match connection.execute_batch(stmt) {
             Ok(()) => {}

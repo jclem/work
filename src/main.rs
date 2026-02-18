@@ -6,6 +6,7 @@ mod completions;
 mod config;
 mod db;
 mod error;
+mod extensions;
 mod logger;
 mod paths;
 mod workd;
