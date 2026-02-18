@@ -15,6 +15,7 @@ pub async fn execute(command: DaemonCommand, logger: Logger) -> Result<(), CliEr
                 if is_process_alive(pid) {
                     if args.force {
                         kill_pid(pid)?;
+                        error::print_success(&format!("stopped daemon (pid {pid})"));
                     } else {
                         return Err(CliError::with_hint(
                             format!("daemon is already running (pid {pid})"),
@@ -47,6 +48,7 @@ pub async fn execute(command: DaemonCommand, logger: Logger) -> Result<(), CliEr
         DaemonCommand::Restart(args) => {
             if let Ok(pid) = read_pid() {
                 kill_pid(pid)?;
+                error::print_success(&format!("stopped daemon (pid {pid})"));
             }
             if args.attach {
                 Workd::start(logger, args.socket).await
