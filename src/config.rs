@@ -37,6 +37,10 @@ fn default_poll_interval() -> u64 {
     300
 }
 
+fn default_pool_pull_enabled() -> bool {
+    true
+}
+
 fn default_pool_pull_interval() -> u64 {
     3600
 }
@@ -50,7 +54,8 @@ pub struct DaemonConfig {
     #[serde(rename = "pool-poll-interval", default = "default_poll_interval")]
     pub pool_poll_interval: u64,
     /// When true, pool worktrees are periodically pulled to stay up-to-date.
-    #[serde(rename = "pool-pull-enabled", default)]
+    /// Defaults to true so users get an up-to-date branch when starting work.
+    #[serde(rename = "pool-pull-enabled", default = "default_pool_pull_enabled")]
     pub pool_pull_enabled: bool,
     /// Seconds between pool pull cycles (default 3600 = 1 hour).
     #[serde(rename = "pool-pull-interval", default = "default_pool_pull_interval")]
@@ -359,5 +364,29 @@ echo "local"
         let config: ProjectConfig = toml::from_str(toml_str).unwrap();
         let script = project_hook_script(&config, "new-after").unwrap();
         assert!(script.contains("echo \"local\""));
+    }
+
+    #[test]
+    fn pool_pull_enabled_defaults_to_true() {
+        let toml_str = "[daemon]\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let daemon = config.daemon.unwrap();
+        assert!(daemon.pool_pull_enabled);
+    }
+
+    #[test]
+    fn pool_pull_enabled_can_be_disabled() {
+        let toml_str = "[daemon]\npool-pull-enabled = false\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let daemon = config.daemon.unwrap();
+        assert!(!daemon.pool_pull_enabled);
+    }
+
+    #[test]
+    fn pool_pull_interval_defaults_to_3600() {
+        let toml_str = "[daemon]\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let daemon = config.daemon.unwrap();
+        assert_eq!(daemon.pool_pull_interval, 3600);
     }
 }
