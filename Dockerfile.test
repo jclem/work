@@ -1,0 +1,18 @@
+FROM rust:1-alpine
+RUN apk add --no-cache musl-dev git
+WORKDIR /build
+
+# Pre-build dependencies (cached when Cargo.toml/Cargo.lock unchanged)
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && \
+    cargo build --release && \
+    rm -rf src
+
+# Build binary (clean project crate to force recompile against cached deps)
+COPY . .
+RUN cargo clean -p work --release && \
+    cargo build --release && \
+    cp target/release/work /usr/local/bin/work && \
+    chmod +x tests/docker/entrypoint.sh
+
+ENTRYPOINT ["/build/tests/docker/entrypoint.sh"]

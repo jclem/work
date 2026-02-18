@@ -43,6 +43,9 @@ if [ "{{flag(name='watch')}}" = "true" ]; then
 fi
 """
 
+[tasks."test:docker"]
+run = "docker build -f Dockerfile.test -t work-test . && docker run --rm work-test"
+
 [tasks."agents:sync"]
 run = ".agents/sync.sh"
 
