@@ -86,7 +86,7 @@ impl TaskAdapter for GitWorktreeAdapter {
     ) -> Result<(), CliError> {
         // Remove the worktree (idempotent — skip if already gone).
         if worktree_path.exists() {
-            let mut args = vec!["worktree", "remove"];
+            let mut args = vec!["-C", project_path, "worktree", "remove"];
             if force {
                 args.push("--force");
             }
