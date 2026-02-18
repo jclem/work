@@ -124,6 +124,8 @@ pub enum SessionCommand {
     Delete(SessionDeleteArgs),
     /// Open the session's worktree.
     Open(SessionOpenArgs),
+    /// Tail live session output.
+    Logs(SessionLogsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -215,6 +217,17 @@ pub struct SessionOpenArgs {
     /// Session ID.
     #[arg(value_name = "ID")]
     pub id: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionLogsArgs {
+    /// Session ID.
+    #[arg(value_name = "ID")]
+    pub id: i64,
+
+    /// Follow the log output (like `tail -f`).
+    #[arg(short, long)]
+    pub follow: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -621,6 +634,34 @@ mod tests {
             assert_eq!(args.agents, 3);
         } else {
             panic!("expected Command::Session Start");
+        }
+    }
+
+    #[test]
+    fn session_logs_parses_with_follow() {
+        let cli = Cli::try_parse_from(["work", "session", "logs", "42", "--follow"]).unwrap();
+        if let Command::Session {
+            command: SessionCommand::Logs(args),
+        } = cli.command
+        {
+            assert_eq!(args.id, 42);
+            assert!(args.follow);
+        } else {
+            panic!("expected Command::Session Logs");
+        }
+    }
+
+    #[test]
+    fn session_logs_parses_without_follow() {
+        let cli = Cli::try_parse_from(["work", "session", "logs", "7"]).unwrap();
+        if let Command::Session {
+            command: SessionCommand::Logs(args),
+        } = cli.command
+        {
+            assert_eq!(args.id, 7);
+            assert!(!args.follow);
+        } else {
+            panic!("expected Command::Session Logs");
         }
     }
 }
