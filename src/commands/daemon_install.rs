@@ -47,7 +47,6 @@ mod platform {
         <string>{exe}</string>
         <string>daemon</string>
         <string>start</string>
-        <string>--attach</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

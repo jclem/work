@@ -25,10 +25,10 @@ pub async fn execute(command: DaemonCommand, logger: Logger) -> Result<(), CliEr
                 }
             }
 
-            if args.attach {
-                Workd::start(logger, args.socket).await
-            } else {
+            if args.detach {
                 daemonize(args.socket)
+            } else {
+                Workd::start(logger, args.socket).await
             }
         }
         DaemonCommand::SocketPath(args) => {
@@ -52,11 +52,7 @@ pub async fn execute(command: DaemonCommand, logger: Logger) -> Result<(), CliEr
                 kill_pid(pid)?;
                 error::print_success(&format!("stopped daemon (pid {pid})"));
             }
-            if args.attach {
-                Workd::start(logger, args.socket).await
-            } else {
-                daemonize(args.socket)
-            }
+            daemonize(args.socket)
         }
     }
 }
@@ -76,7 +72,7 @@ fn daemonize(socket: Option<PathBuf>) -> Result<(), CliError> {
         .map_err(|e| CliError::with_source("failed to create daemon log file", e))?;
 
     let mut cmd = process::Command::new(exe);
-    cmd.args(["daemon", "start", "--attach"]);
+    cmd.args(["daemon", "start"]);
 
     if let Some(ref s) = socket {
         cmd.arg("--socket").arg(s);

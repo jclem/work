@@ -120,9 +120,13 @@ pub struct DaemonStartArgs {
     #[arg(long, value_name = "PATH")]
     pub socket: Option<PathBuf>,
 
-    /// Run in the foreground instead of daemonizing.
-    #[arg(long)]
+    /// Run in the foreground (default).
+    #[arg(long, conflicts_with = "detach")]
     pub attach: bool,
+
+    /// Daemonize and run in the background.
+    #[arg(long, conflicts_with = "attach")]
+    pub detach: bool,
 
     /// Replace an already-running daemon.
     #[arg(long)]
@@ -141,10 +145,6 @@ pub struct DaemonRestartArgs {
     /// Override the unix socket path used by the daemon.
     #[arg(long, value_name = "PATH")]
     pub socket: Option<PathBuf>,
-
-    /// Run in the foreground instead of daemonizing.
-    #[arg(long)]
-    pub attach: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -401,5 +401,64 @@ mod tests {
     fn doctor_parses() {
         let cli = Cli::try_parse_from(["work", "doctor"]).unwrap();
         assert!(matches!(cli.command, Command::Doctor));
+    }
+
+    #[test]
+    fn daemon_start_defaults_to_attach() {
+        let cli = Cli::try_parse_from(["work", "daemon", "start"]).unwrap();
+        if let Command::Daemon {
+            command: DaemonCommand::Start(args),
+        } = cli.command
+        {
+            assert!(!args.attach);
+            assert!(!args.detach);
+        } else {
+            panic!("expected Command::Daemon Start");
+        }
+    }
+
+    #[test]
+    fn daemon_start_accepts_detach() {
+        let cli = Cli::try_parse_from(["work", "daemon", "start", "--detach"]).unwrap();
+        if let Command::Daemon {
+            command: DaemonCommand::Start(args),
+        } = cli.command
+        {
+            assert!(args.detach);
+            assert!(!args.attach);
+        } else {
+            panic!("expected Command::Daemon Start");
+        }
+    }
+
+    #[test]
+    fn daemon_start_accepts_attach() {
+        let cli = Cli::try_parse_from(["work", "daemon", "start", "--attach"]).unwrap();
+        if let Command::Daemon {
+            command: DaemonCommand::Start(args),
+        } = cli.command
+        {
+            assert!(args.attach);
+            assert!(!args.detach);
+        } else {
+            panic!("expected Command::Daemon Start");
+        }
+    }
+
+    #[test]
+    fn daemon_start_rejects_attach_and_detach() {
+        let result = Cli::try_parse_from(["work", "daemon", "start", "--attach", "--detach"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn daemon_restart_parses() {
+        let cli = Cli::try_parse_from(["work", "daemon", "restart"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon {
+                command: DaemonCommand::Restart(_),
+            }
+        ));
     }
 }
