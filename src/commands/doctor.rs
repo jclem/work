@@ -375,14 +375,22 @@ fn check_sessions(conn: &Connection, results: &mut Vec<CheckResult>) {
 
     let mut missing_worktrees = Vec::new();
     for (id, branch, task_path) in &active_sessions {
-        if let Some(path) = task_path
-            && !Path::new(path).exists()
-        {
-            missing_worktrees.push(CheckResult::fail_with_hint(
-                format!("session {id} ({branch})"),
-                format!("worktree missing: {path}"),
-                format!("delete with `work session delete {id}`"),
-            ));
+        match task_path {
+            None => {
+                missing_worktrees.push(CheckResult::fail_with_hint(
+                    format!("session {id} ({branch})"),
+                    "task record missing (deleted while session active)",
+                    format!("delete with `work session delete {id}`"),
+                ));
+            }
+            Some(path) if !Path::new(path).exists() => {
+                missing_worktrees.push(CheckResult::fail_with_hint(
+                    format!("session {id} ({branch})"),
+                    format!("worktree missing: {path}"),
+                    format!("delete with `work session delete {id}`"),
+                ));
+            }
+            _ => {}
         }
     }
 
