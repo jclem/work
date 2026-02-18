@@ -36,6 +36,10 @@ impl CliError {
             source: Some(Box::new(source)),
         }
     }
+
+    pub fn hint(&self) -> Option<&str> {
+        self.hint.as_deref()
+    }
 }
 
 impl Display for CliError {

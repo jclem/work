@@ -2,13 +2,17 @@ use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use axum::Json;
 use axum::Router;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use rand::Rng;
 use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
 use tokio::net::UnixListener;
 use tokio::sync::{Notify, Semaphore, watch};
 
@@ -26,6 +30,144 @@ use crate::paths;
 struct AppState {
     deletion_notify: Arc<Notify>,
     pool_notify: Arc<Notify>,
+}
+
+// ---------------------------------------------------------------------------
+// API request/response types
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+pub struct CreateProjectRequest {
+    pub path: String,
+    pub name: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CreateProjectResponse {
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ProjectInfo {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DeleteProjectRequest {
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CreateTaskRequest {
+    pub name: Option<String>,
+    pub project: Option<String>,
+    pub cwd: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CreateTaskResponse {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "hookScript", skip_serializing_if = "Option::is_none")]
+    pub hook_script: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ListTasksRequest {
+    pub project: Option<String>,
+    pub cwd: Option<String>,
+    pub all: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TaskInfo {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "projectName", skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DeleteTaskRequest {
+    pub name: String,
+    pub project: Option<String>,
+    pub cwd: String,
+    pub force: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NukeResponse {
+    pub tasks: usize,
+    #[serde(rename = "poolWorktrees")]
+    pub pool_worktrees: usize,
+    pub projects: usize,
+}
+
+// ---------------------------------------------------------------------------
+// API error type
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ErrorBody {
+    error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
+}
+
+struct ApiError {
+    status: StatusCode,
+    message: String,
+    hint: Option<String>,
+}
+
+impl ApiError {
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+            hint: None,
+        }
+    }
+}
+
+impl From<CliError> for ApiError {
+    fn from(err: CliError) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: err.to_string(),
+            hint: err.hint().map(|s| s.to_string()),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let body = ErrorBody {
+            error: self.message,
+            hint: self.hint,
+        };
+        (self.status, Json(body)).into_response()
+    }
+}
+
+async fn run_blocking<F, T>(f: F) -> Result<T, ApiError>
+where
+    F: FnOnce() -> Result<T, CliError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError::internal(format!("task panicked: {e}")))?
+        .map_err(ApiError::from)
 }
 
 pub struct Workd {
@@ -122,6 +264,13 @@ impl Workd {
             .route("/healthz", get(healthz))
             .route("/tasks/process-deletions", post(process_deletions))
             .route("/pool/replenish", post(pool_replenish))
+            .route("/projects/create", post(handle_create_project))
+            .route("/projects/list", post(handle_list_projects))
+            .route("/projects/delete", post(handle_delete_project))
+            .route("/tasks/create", post(handle_create_task))
+            .route("/tasks/list", post(handle_list_tasks))
+            .route("/tasks/delete", post(handle_delete_task))
+            .route("/tasks/nuke", post(handle_nuke))
             .with_state(state);
 
         axum::serve(listener, app)
@@ -589,6 +738,549 @@ async fn pool_replenish(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 // ---------------------------------------------------------------------------
+// API handlers
+// ---------------------------------------------------------------------------
+
+async fn handle_create_project(
+    Json(req): Json<CreateProjectRequest>,
+) -> Result<Json<CreateProjectResponse>, ApiError> {
+    Ok(Json(run_blocking(move || create_project_inner(req)).await?))
+}
+
+async fn handle_list_projects() -> Result<Json<Vec<ProjectInfo>>, ApiError> {
+    Ok(Json(run_blocking(list_projects_inner).await?))
+}
+
+async fn handle_delete_project(
+    Json(req): Json<DeleteProjectRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    run_blocking(move || delete_project_inner(req)).await?;
+    Ok(Json(serde_json::json!({})))
+}
+
+async fn handle_create_task(
+    State(state): State<AppState>,
+    Json(req): Json<CreateTaskRequest>,
+) -> Result<Json<CreateTaskResponse>, ApiError> {
+    let pool_notify = state.pool_notify.clone();
+    Ok(Json(
+        run_blocking(move || create_task_inner(req, pool_notify)).await?,
+    ))
+}
+
+async fn handle_list_tasks(
+    Json(req): Json<ListTasksRequest>,
+) -> Result<Json<Vec<TaskInfo>>, ApiError> {
+    Ok(Json(run_blocking(move || list_tasks_inner(req)).await?))
+}
+
+async fn handle_delete_task(
+    Json(req): Json<DeleteTaskRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    run_blocking(move || delete_task_inner(req)).await?;
+    Ok(Json(serde_json::json!({})))
+}
+
+async fn handle_nuke() -> Result<Json<NukeResponse>, ApiError> {
+    Ok(Json(run_blocking(nuke_inner).await?))
+}
+
+// ---------------------------------------------------------------------------
+// API handler implementations
+// ---------------------------------------------------------------------------
+
+fn create_project_inner(req: CreateProjectRequest) -> Result<CreateProjectResponse, CliError> {
+    let name = resolve_project_name(&req.path, req.name)?;
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let now = unix_timestamp_seconds()?;
+    conn.execute(
+        "INSERT INTO projects (name, path, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?4)",
+        params![name, req.path, now, now],
+    )
+    .map_err(map_project_insert_error)?;
+
+    Ok(CreateProjectResponse { name })
+}
+
+fn list_projects_inner() -> Result<Vec<ProjectInfo>, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let mut stmt = conn
+        .prepare("SELECT name, path, createdAt, updatedAt FROM projects ORDER BY name")
+        .map_err(|e| CliError::with_source("failed to prepare project query", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ProjectInfo {
+                name: row.get(0)?,
+                path: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| CliError::with_source("failed to query projects", e))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError::with_source("failed to load projects", e))
+}
+
+fn delete_project_inner(req: DeleteProjectRequest) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let project_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM projects WHERE name = ?1",
+            params![req.name],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(project_id) = project_id {
+        let mut pool_stmt = conn
+            .prepare(
+                "SELECT po.tempName, po.path, p.path \
+                 FROM pool po JOIN projects p ON po.projectId = p.id \
+                 WHERE po.projectId = ?1",
+            )
+            .map_err(|e| CliError::with_source("failed to query pool entries", e))?;
+
+        let pool_entries: Vec<(String, String, String)> = pool_stmt
+            .query_map(params![project_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|e| CliError::with_source("failed to query pool entries", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CliError::with_source("failed to load pool entries", e))?;
+
+        let adapter = GitWorktreeAdapter;
+        for (temp_name, pool_path, project_path) in &pool_entries {
+            let _ = adapter.remove(project_path, temp_name, Path::new(pool_path), true);
+        }
+
+        conn.execute("DELETE FROM pool WHERE projectId = ?1", params![project_id])
+            .map_err(|e| CliError::with_source("failed to delete pool entries", e))?;
+    }
+
+    let deleted = conn
+        .execute("DELETE FROM projects WHERE name = ?1", params![req.name])
+        .map_err(|e| CliError::with_source("failed to delete project", e))?;
+
+    if deleted == 0 {
+        return Err(CliError::with_hint(
+            "project not found",
+            "run `work projects list` to see existing project names",
+        ));
+    }
+
+    Ok(())
+}
+
+fn create_task_inner(
+    req: CreateTaskRequest,
+    pool_notify: Arc<Notify>,
+) -> Result<CreateTaskResponse, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let (project_id, project_name, project_path) =
+        detect_project(&conn, req.project.as_deref(), &req.cwd)?;
+    let task_name = req.name.unwrap_or_else(generate_task_name);
+    let worktree_path = paths::worktree_path(&project_name, &task_name);
+
+    let adapter = GitWorktreeAdapter;
+    let global_cfg = config::load()?;
+    let default_branch =
+        config::effective_default_branch(&global_cfg, &project_name, &project_path);
+
+    let claimed = try_claim_pool(
+        &conn,
+        &adapter,
+        project_id,
+        &project_path,
+        &task_name,
+        &worktree_path,
+        &pool_notify,
+    );
+
+    if !claimed {
+        adapter.create(&project_path, &task_name, &worktree_path, &default_branch)?;
+    }
+
+    let now = unix_timestamp_seconds()?;
+    let worktree_path_str = worktree_path.to_string_lossy().to_string();
+    conn.execute(
+        "INSERT INTO tasks (projectId, name, path, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![project_id, task_name, worktree_path_str, now, now],
+    )
+    .map_err(|e| CliError::with_source("failed to create task", e))?;
+
+    let project_cfg = config::load_project_config(&project_path)?;
+    let hook_script = config::project_hook_script(&project_cfg, "new-after")
+        .map(|s| s.to_string())
+        .or_else(|| {
+            config::hook_script(&global_cfg, &project_name, "new-after").map(|s| s.to_string())
+        });
+
+    Ok(CreateTaskResponse {
+        name: task_name,
+        path: worktree_path_str,
+        hook_script,
+    })
+}
+
+fn list_tasks_inner(req: ListTasksRequest) -> Result<Vec<TaskInfo>, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let all = req.all.unwrap_or(false);
+
+    if all {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.name, t.path, t.createdAt, t.updatedAt, p.name \
+                 FROM tasks t JOIN projects p ON t.projectId = p.id \
+                 WHERE t.status = 'active' \
+                 ORDER BY p.name, t.name",
+            )
+            .map_err(|e| CliError::with_source("failed to prepare task query", e))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(TaskInfo {
+                    name: row.get(0)?,
+                    path: row.get(1)?,
+                    created_at: row.get(2)?,
+                    updated_at: row.get(3)?,
+                    project_name: Some(row.get(4)?),
+                })
+            })
+            .map_err(|e| CliError::with_source("failed to query tasks", e))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CliError::with_source("failed to load tasks", e))
+    } else {
+        let cwd = req.cwd.as_deref().unwrap_or("");
+        let (project_id, _, _) = detect_project(&conn, req.project.as_deref(), cwd)?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, path, createdAt, updatedAt \
+                 FROM tasks WHERE projectId = ?1 AND status = 'active' ORDER BY name",
+            )
+            .map_err(|e| CliError::with_source("failed to prepare task query", e))?;
+
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok(TaskInfo {
+                    name: row.get(0)?,
+                    path: row.get(1)?,
+                    created_at: row.get(2)?,
+                    updated_at: row.get(3)?,
+                    project_name: None,
+                })
+            })
+            .map_err(|e| CliError::with_source("failed to query tasks", e))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CliError::with_source("failed to load tasks", e))
+    }
+}
+
+fn delete_task_inner(req: DeleteTaskRequest) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let (project_id, _, project_path) = detect_project(&conn, req.project.as_deref(), &req.cwd)?;
+    let force = req.force.unwrap_or(false);
+
+    let (task_id, task_path): (i64, String) = conn
+        .query_row(
+            "SELECT id, path FROM tasks WHERE projectId = ?1 AND name = ?2 AND status = 'active'",
+            params![project_id, req.name],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|source| match source {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CliError::with_hint("task not found", "run `work list` to see existing tasks")
+            }
+            other => CliError::with_source("failed to look up task", other),
+        })?;
+
+    let adapter = GitWorktreeAdapter;
+    adapter.remove(&project_path, &req.name, Path::new(&task_path), force)?;
+
+    conn.execute("DELETE FROM tasks WHERE id = ?1", params![task_id])
+        .map_err(|e| CliError::with_source("failed to delete task from database", e))?;
+
+    Ok(())
+}
+
+fn nuke_inner() -> Result<NukeResponse, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let adapter = GitWorktreeAdapter;
+
+    // Remove pool worktrees first.
+    let mut pool_stmt = conn
+        .prepare(
+            "SELECT po.tempName, po.path, p.path \
+             FROM pool po JOIN projects p ON po.projectId = p.id",
+        )
+        .map_err(|e| CliError::with_source("failed to query pool entries", e))?;
+
+    let pool_entries: Vec<(String, String, String)> = pool_stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|e| CliError::with_source("failed to query pool entries", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError::with_source("failed to load pool entries", e))?;
+
+    for (temp_name, pool_path, project_path) in &pool_entries {
+        let _ = adapter.remove(project_path, temp_name, Path::new(pool_path), true);
+    }
+
+    conn.execute("DELETE FROM pool", [])
+        .map_err(|e| CliError::with_source("failed to delete pool entries", e))?;
+
+    // Remove task worktrees.
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.name, t.path, p.path \
+             FROM tasks t JOIN projects p ON t.projectId = p.id",
+        )
+        .map_err(|e| CliError::with_source("failed to query tasks", e))?;
+
+    let tasks: Vec<(String, String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|e| CliError::with_source("failed to query tasks", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError::with_source("failed to load tasks", e))?;
+
+    for (task_name, task_path, project_path) in &tasks {
+        adapter.remove(project_path, task_name, Path::new(task_path), true)?;
+    }
+
+    conn.execute("DELETE FROM tasks", [])
+        .map_err(|e| CliError::with_source("failed to delete tasks", e))?;
+
+    let deleted_projects = conn
+        .execute("DELETE FROM projects", [])
+        .map_err(|e| CliError::with_source("failed to delete projects", e))?;
+
+    Ok(NukeResponse {
+        tasks: tasks.len(),
+        pool_worktrees: pool_entries.len(),
+        projects: deleted_projects,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers (used by API handlers)
+// ---------------------------------------------------------------------------
+
+fn detect_project(
+    connection: &rusqlite::Connection,
+    explicit_project: Option<&str>,
+    cwd: &str,
+) -> Result<(i64, String, String), CliError> {
+    if let Some(name) = explicit_project {
+        let row = connection
+            .query_row(
+                "SELECT id, name, path FROM projects WHERE name = ?1",
+                params![name],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|source| match source {
+                rusqlite::Error::QueryReturnedNoRows => CliError::with_hint(
+                    format!("project '{name}' not found"),
+                    "run `work projects list` to see existing projects",
+                ),
+                other => CliError::with_source("failed to look up project", other),
+            })?;
+        return Ok(row);
+    }
+
+    let mut stmt = connection
+        .prepare("SELECT id, name, path FROM projects")
+        .map_err(|source| CliError::with_source("failed to query projects", source))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|source| CliError::with_source("failed to query projects", source))?;
+
+    let mut best: Option<(i64, String, String)> = None;
+    let mut best_len = 0;
+
+    for row in rows {
+        let (id, name, path) =
+            row.map_err(|source| CliError::with_source("failed to load project", source))?;
+
+        if cwd.starts_with(&path)
+            && (cwd.len() == path.len() || cwd.as_bytes()[path.len()] == b'/')
+            && path.len() > best_len
+        {
+            best_len = path.len();
+            best = Some((id, name, path));
+        }
+    }
+
+    best.ok_or_else(|| {
+        CliError::with_hint(
+            "could not detect project from current directory",
+            "run `work projects create` to register a project, or pass --project",
+        )
+    })
+}
+
+fn try_claim_pool(
+    connection: &rusqlite::Connection,
+    adapter: &GitWorktreeAdapter,
+    project_id: i64,
+    project_path: &str,
+    task_name: &str,
+    worktree_path: &Path,
+    pool_notify: &Arc<Notify>,
+) -> bool {
+    let result: Result<(i64, String, String), _> = connection.query_row(
+        "DELETE FROM pool WHERE id = (
+            SELECT id FROM pool WHERE projectId = ?1 ORDER BY createdAt ASC LIMIT 1
+        ) RETURNING id, tempName, path",
+        params![project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    );
+
+    match result {
+        Ok((_pool_id, temp_name, old_path_str)) => {
+            let old_path = std::path::Path::new(&old_path_str);
+
+            match adapter.claim_pooled(project_path, &temp_name, task_name, old_path, worktree_path)
+            {
+                Ok(()) => {
+                    pool_notify.notify_one();
+                    true
+                }
+                Err(e) => {
+                    eprintln!("pool claim failed ({e}), falling back to normal creation");
+                    false
+                }
+            }
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => false,
+        Err(_) => false,
+    }
+}
+
+fn resolve_project_name(
+    project_path: &str,
+    explicit_name: Option<String>,
+) -> Result<String, CliError> {
+    if let Some(name) = explicit_name {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(CliError::with_hint(
+                "project name cannot be empty",
+                "pass a non-empty value to --name",
+            ));
+        }
+        return Ok(trimmed.to_string());
+    }
+
+    let path = PathBuf::from(project_path);
+    let basename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            CliError::with_hint(
+                format!("cannot infer a project name from {}", path.display()),
+                "pass --name to set a project name explicitly",
+            )
+        })?;
+
+    Ok(basename.to_string())
+}
+
+fn map_project_insert_error(source: rusqlite::Error) -> CliError {
+    match source {
+        rusqlite::Error::SqliteFailure(_, Some(message)) if message.contains("projects.name") => {
+            CliError::with_hint(
+                "a project with this name already exists",
+                "choose another name or run `work projects delete <project-name>` first",
+            )
+        }
+        rusqlite::Error::SqliteFailure(_, Some(message)) if message.contains("projects.path") => {
+            CliError::with_hint(
+                "a project for this path already exists",
+                "run `work projects list` to inspect existing projects",
+            )
+        }
+        other => CliError::with_source("failed to create project", other),
+    }
+}
+
+fn unix_timestamp_seconds() -> Result<i64, CliError> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| CliError::with_source("system clock is before unix epoch", source))?;
+    Ok(duration.as_secs() as i64)
+}
+
+const ADJECTIVES: &[&str] = &[
+    "amber", "bold", "calm", "dark", "eager", "fair", "glad", "happy", "idle", "jolly", "keen",
+    "lush", "mild", "neat", "open", "pale", "quick", "rare", "safe", "tall", "vast", "warm",
+    "young", "zen", "agile", "brave", "crisp", "deep", "even", "fresh", "green", "huge", "icy",
+    "just", "kind", "lean", "mossy", "noble", "odd", "plain", "quiet", "rapid", "sharp", "tidy",
+    "ultra", "vivid", "wild", "extra", "zesty", "dry",
+];
+
+const NOUNS: &[&str] = &[
+    "ant", "bear", "cat", "deer", "elk", "fox", "goat", "hare", "ibis", "jay", "kite", "lark",
+    "mole", "newt", "owl", "puma", "quail", "ram", "seal", "toad", "urchin", "vole", "wolf", "yak",
+    "zebra", "ape", "bass", "crab", "dove", "eel", "frog", "gull", "hawk", "iguana", "jackal",
+    "koala", "lion", "moose", "narwhal", "otter", "parrot", "robin", "snake", "tiger", "vulture",
+    "whale", "wren", "ox", "finch", "crane",
+];
+
+fn generate_task_name() -> String {
+    let date = today_date_string();
+    let mut rng = rand::thread_rng();
+    let adj = ADJECTIVES[rng.gen_range(0..ADJECTIVES.len())];
+    let noun = NOUNS[rng.gen_range(0..NOUNS.len())];
+    format!("{date}-{adj}-{noun}")
+}
+
+fn today_date_string() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_secs();
+    let days = (secs / 86400) as i64;
+
+    // Civil date from days since epoch (Howard Hinnant's algorithm)
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -682,5 +1374,48 @@ impl Drop for SocketCleanup {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
         let _ = fs::remove_file(&self.pid_path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_task_name_has_date_prefix() {
+        let name = generate_task_name();
+        let expected_prefix = today_date_string();
+        assert!(
+            name.starts_with(&expected_prefix),
+            "expected '{name}' to start with '{expected_prefix}'"
+        );
+    }
+
+    #[test]
+    fn generate_task_name_has_three_parts_after_date() {
+        let name = generate_task_name();
+        // Format: YYYY-MM-DD-adjective-noun (5 dash-separated parts)
+        let parts: Vec<&str> = name.split('-').collect();
+        assert_eq!(parts.len(), 5, "expected 5 parts in '{name}'");
+    }
+
+    #[test]
+    fn today_date_string_format() {
+        let date = today_date_string();
+        assert_eq!(date.len(), 10);
+        assert_eq!(&date[4..5], "-");
+        assert_eq!(&date[7..8], "-");
+    }
+
+    #[test]
+    fn resolve_project_name_uses_explicit_name() {
+        let name = resolve_project_name("/tmp/demo", Some("custom".to_string())).unwrap();
+        assert_eq!(name, "custom");
+    }
+
+    #[test]
+    fn resolve_project_name_uses_path_basename() {
+        let name = resolve_project_name("/tmp/demo", None).unwrap();
+        assert_eq!(name, "demo");
     }
 }
