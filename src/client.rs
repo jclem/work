@@ -138,6 +138,7 @@ pub fn detect_project(project: Option<&str>, cwd: &str) -> Result<ProjectInfo, C
 
 pub fn create_task(
     name: Option<&str>,
+    branch: Option<&str>,
     project: Option<&str>,
     cwd: &str,
 ) -> Result<CreateTaskResponse, CliError> {
@@ -145,6 +146,7 @@ pub fn create_task(
         "/tasks/create",
         &CreateTaskRequest {
             name: name.map(|s| s.to_string()),
+            branch: branch.map(|s| s.to_string()),
             project: project.map(|s| s.to_string()),
             cwd: cwd.to_string(),
         },

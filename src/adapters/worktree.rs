@@ -77,6 +77,30 @@ impl TaskAdapter for GitWorktreeAdapter {
         Ok(())
     }
 
+    fn create_from_branch(
+        &self,
+        project_path: &str,
+        branch: &str,
+        worktree_path: &Path,
+    ) -> Result<(), CliError> {
+        let output = Command::new("git")
+            .args(["-C", project_path, "worktree", "add"])
+            .arg(worktree_path)
+            .arg(branch)
+            .output()
+            .map_err(|source| CliError::with_source("failed to run git", source))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(CliError::new(format!(
+                "git worktree add failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        Ok(())
+    }
+
     fn remove(
         &self,
         project_path: &str,

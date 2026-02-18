@@ -13,6 +13,13 @@ pub trait TaskAdapter {
         start_point: &str,
     ) -> Result<(), CliError>;
 
+    fn create_from_branch(
+        &self,
+        project_path: &str,
+        branch: &str,
+        worktree_path: &Path,
+    ) -> Result<(), CliError>;
+
     fn remove(
         &self,
         project_path: &str,
