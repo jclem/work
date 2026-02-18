@@ -48,12 +48,15 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-pub fn worktree_path(project_name: &str, task_name: &str) -> PathBuf {
+pub fn project_worktrees_dir(project_name: &str) -> PathBuf {
     data_dir_root()
         .join("projects")
         .join(project_name)
         .join("worktrees")
-        .join(task_name)
+}
+
+pub fn worktree_path(project_name: &str, task_name: &str) -> PathBuf {
+    project_worktrees_dir(project_name).join(task_name)
 }
 
 pub fn projects_dir() -> PathBuf {

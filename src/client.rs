@@ -8,8 +8,8 @@ use crate::error::CliError;
 use crate::paths;
 use crate::workd::{
     ClearPoolResponse, CreateProjectRequest, CreateProjectResponse, CreateTaskRequest,
-    CreateTaskResponse, DeleteProjectRequest, DeleteTaskRequest, ListTasksRequest, NukeResponse,
-    ProjectInfo, TaskInfo,
+    CreateTaskResponse, DeleteProjectRequest, DeleteTaskRequest, DetectProjectRequest,
+    ListTasksRequest, NukeResponse, ProjectInfo, TaskInfo,
 };
 
 fn daemon_error() -> CliError {
@@ -120,6 +120,16 @@ pub fn delete_project(name: &str) -> Result<(), CliError> {
         },
     )?;
     Ok(())
+}
+
+pub fn detect_project(project: Option<&str>, cwd: &str) -> Result<ProjectInfo, CliError> {
+    post_json(
+        "/projects/detect",
+        &DetectProjectRequest {
+            project: project.map(|s| s.to_string()),
+            cwd: cwd.to_string(),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -57,7 +57,7 @@ pub enum Command {
     #[command(alias = "ls")]
     List(ListArgs),
 
-    /// Change directory to a task's worktree.
+    /// Change directory to a task's worktree, or the project root.
     Cd(CdArgs),
 
     /// Delete a task.
@@ -242,9 +242,9 @@ pub struct DeleteArgs {
 
 #[derive(Debug, Args)]
 pub struct CdArgs {
-    /// Task name.
+    /// Task name. If omitted, change to the project root.
     #[arg(value_name = "NAME", add = completions::task_name_completer())]
-    pub name: String,
+    pub name: Option<String>,
 
     /// Project the task belongs to.
     #[arg(long, value_name = "NAME")]
@@ -329,16 +329,20 @@ mod tests {
     fn cd_parses_with_name() {
         let cli = Cli::try_parse_from(["work", "cd", "my-task"]).unwrap();
         if let Command::Cd(args) = cli.command {
-            assert_eq!(args.name, "my-task");
+            assert_eq!(args.name.as_deref(), Some("my-task"));
         } else {
             panic!("expected Command::Cd");
         }
     }
 
     #[test]
-    fn cd_requires_name() {
-        let result = Cli::try_parse_from(["work", "cd"]);
-        assert!(result.is_err());
+    fn cd_parses_without_name() {
+        let cli = Cli::try_parse_from(["work", "cd"]).unwrap();
+        if let Command::Cd(args) = cli.command {
+            assert!(args.name.is_none());
+        } else {
+            panic!("expected Command::Cd");
+        }
     }
 
     #[test]
