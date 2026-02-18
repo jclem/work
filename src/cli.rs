@@ -64,11 +64,24 @@ pub enum Command {
     /// Remove all tasks and projects.
     Nuke(NukeArgs),
 
+    /// Manage the worktree pool.
+    #[command(hide = true)]
+    Pool {
+        #[command(subcommand)]
+        command: PoolCommand,
+    },
+
     /// Manage configuration.
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PoolCommand {
+    /// Remove all pool worktrees.
+    Clear,
 }
 
 #[derive(Debug, Subcommand)]
@@ -139,6 +152,7 @@ pub enum ProjectsCommand {
     List(ProjectsListArgs),
 
     /// Delete a project by name.
+    #[command(alias = "rm")]
     Delete(ProjectsDeleteArgs),
 }
 
