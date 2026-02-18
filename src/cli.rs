@@ -62,7 +62,7 @@ pub enum Command {
     Delete(DeleteArgs),
 
     /// Remove all tasks and projects.
-    Nuke,
+    Nuke(NukeArgs),
 
     /// Manage configuration.
     Config {
@@ -218,6 +218,13 @@ pub struct DeleteArgs {
     /// Force removal even if the worktree has changes.
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct NukeArgs {
+    /// Skip confirmation prompt.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]

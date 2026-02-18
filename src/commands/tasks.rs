@@ -1,4 +1,6 @@
-use crate::cli::{DeleteArgs, ListArgs, NewArgs};
+use std::io::IsTerminal;
+
+use crate::cli::{self, DeleteArgs, ListArgs, NewArgs};
 use crate::client;
 use crate::error::{self, CliError};
 
@@ -122,7 +124,29 @@ pub fn delete(args: DeleteArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn nuke() -> Result<(), CliError> {
+pub fn nuke(args: cli::NukeArgs) -> Result<(), CliError> {
+    if !args.yes {
+        if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+            return Err(CliError::with_hint(
+                "cannot confirm in a non-interactive environment",
+                "Use --yes to skip the confirmation prompt.",
+            ));
+        }
+
+        let confirmed = dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+            .with_prompt("Remove all tasks, pool worktrees, and projects?")
+            .default(false)
+            .interact()
+            .map_err(|e| {
+                let dialoguer::Error::IO(source) = e;
+                CliError::with_source("failed to read confirmation", source)
+            })?;
+
+        if !confirmed {
+            return Ok(());
+        }
+    }
+
     let resp = client::nuke()?;
     error::print_success(&format!(
         "Removed {} task(s), {} pool worktree(s), and {} project(s).",

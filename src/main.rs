@@ -84,7 +84,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::New(args) => tasks_command::create(args)?,
         Command::List(args) => tasks_command::list(args)?,
         Command::Delete(args) => tasks_command::delete(args)?,
-        Command::Nuke => tasks_command::nuke()?,
+        Command::Nuke(args) => tasks_command::nuke(args)?,
         Command::Config { command } => config_command::execute(command)?,
     }
 
