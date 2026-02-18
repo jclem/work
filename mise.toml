@@ -31,5 +31,11 @@ run = [
 [tasks."release:github"]
 run = "gh workflow run release.yml --field bump={{arg(name='bump', usage='patch, minor, or major')}}"
 
+[tasks."agents:sync"]
+run = ".agents/sync.sh"
+
+[tasks."agents:check"]
+run = ".agents/sync.sh --check"
+
 [tasks.pre-commit]
-depends = ["check", "test"]
+depends = ["check", "test", "agents:check"]
