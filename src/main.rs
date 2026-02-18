@@ -17,12 +17,12 @@ use crate::cli::{Cli, Command};
 use crate::commands::{
     config as config_command, daemon as daemon_command, doctor as doctor_command,
     init as init_command, pool as pool_command, projects as projects_command,
-    tasks as tasks_command,
+    sessions as sessions_command, tasks as tasks_command,
 };
 use crate::error::CliError;
 use crate::logger::get_logger;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() {
     CompleteEnv::with_factory(Cli::command).complete();
 
@@ -89,6 +89,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Nuke(args) => tasks_command::nuke(args)?,
         Command::Pool { command } => pool_command::execute(command)?,
         Command::Config { command } => config_command::execute(command)?,
+        Command::Session { command } => sessions_command::execute(command)?,
         Command::Doctor => doctor_command::run()?,
     }
 

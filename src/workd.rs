@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
@@ -31,6 +32,8 @@ use crate::paths;
 struct AppState {
     deletion_notify: Arc<Notify>,
     pool_notify: Arc<Notify>,
+    session_notify: Arc<Notify>,
+    session_pids: Arc<Mutex<HashMap<i64, u32>>>,
     logger: Logger,
 }
 
@@ -128,6 +131,83 @@ pub struct ClearPoolResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Session request/response types
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+pub struct StartSessionsRequest {
+    pub issue_ref: String,
+    pub num_agents: u32,
+    pub project: Option<String>,
+    pub cwd: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StartSessionsResponse {
+    pub sessions: Vec<SessionInfo>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ListSessionsRequest {
+    pub issue_ref: Option<String>,
+    pub project: Option<String>,
+    pub cwd: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ShowSessionRequest {
+    pub id: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ShowSessionResponse {
+    pub session: SessionInfo,
+    pub report: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PickSessionRequest {
+    pub id: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RejectSessionRequest {
+    pub id: i64,
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DeleteSessionRequest {
+    pub id: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StopSessionRequest {
+    pub id: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub id: i64,
+    pub issue_ref: String,
+    pub attempt_no: i64,
+    pub branch_name: String,
+    pub status: String,
+    pub task_path: Option<String>,
+    pub base_sha: String,
+    pub head_sha: Option<String>,
+    pub mergeable: Option<bool>,
+    pub exit_code: Option<i32>,
+    pub has_report: bool,
+    pub lines_changed: Option<u32>,
+    pub files_changed: Option<u32>,
+    pub summary_excerpt: Option<String>,
+    pub project_name: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+// ---------------------------------------------------------------------------
 // API error type
 // ---------------------------------------------------------------------------
 
@@ -220,11 +300,46 @@ impl Workd {
     async fn start_inner(&self) -> Result<(), CliError> {
         self.logger.info("starting daemon");
         self.prepare_database()?;
+        self.recover_orphaned_sessions();
         self.start_http_listener().await
     }
 
     fn prepare_database(&self) -> Result<(), CliError> {
         self.log_timed("prepareDatabase", || db::prepare_schema(&self.sql))
+    }
+
+    fn recover_orphaned_sessions(&self) {
+        // Kill any orphaned agent processes from a previous run.
+        if let Ok(mut stmt) = self
+            .sql
+            .prepare("SELECT id, pid FROM sessions WHERE status = 'running' AND pid IS NOT NULL")
+            && let Ok(rows) =
+                stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        {
+            for row in rows.flatten() {
+                let (session_id, pid) = row;
+                let pid = pid as i32;
+                // Check if the process is still alive.
+                if unsafe { libc::kill(pid, 0) } == 0 {
+                    self.logger.info(format!(
+                        "killing orphaned agent process {pid} for session {session_id}"
+                    ));
+                    unsafe {
+                        libc::kill(pid, libc::SIGTERM);
+                    }
+                }
+            }
+        }
+
+        // Reset running sessions back to planned and clear PIDs.
+        match self.sql.execute(
+            "UPDATE sessions SET status = 'planned', pid = NULL, updatedAt = CAST(strftime('%s', 'now') AS INTEGER) WHERE status = 'running'",
+            [],
+        ) {
+            Ok(0) => {}
+            Ok(n) => self.logger.info(format!("recovered {n} orphaned running session(s)")),
+            Err(e) => self.logger.error(format!("failed to recover orphaned sessions: {e}")),
+        }
     }
 
     async fn start_http_listener(&self) -> Result<(), CliError> {
@@ -253,7 +368,12 @@ impl Workd {
 
         let deletion_notify = Arc::new(Notify::new());
         let pool_notify = Arc::new(Notify::new());
+        let session_notify = Arc::new(Notify::new());
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let global_config = config::load().unwrap_or_default();
+        let max_agents = config::effective_max_agents(&global_config);
+        let agent_semaphore = Arc::new(Semaphore::new(max_agents as usize));
 
         // Spawn background deletion worker.
         let deletion_handle = tokio::spawn(deletion_worker(
@@ -265,6 +385,17 @@ impl Workd {
         // Spawn background pool worker.
         let pool_handle = tokio::spawn(pool_worker(
             pool_notify.clone(),
+            shutdown_rx.clone(),
+            self.logger.clone(),
+        ));
+
+        let session_pids: Arc<Mutex<HashMap<i64, u32>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        // Spawn background session worker.
+        let session_handle = tokio::spawn(session_worker(
+            session_notify.clone(),
+            agent_semaphore.clone(),
+            session_pids.clone(),
             shutdown_rx,
             self.logger.clone(),
         ));
@@ -272,6 +403,8 @@ impl Workd {
         let state = AppState {
             deletion_notify,
             pool_notify,
+            session_notify,
+            session_pids: session_pids.clone(),
             logger: self.logger.clone(),
         };
 
@@ -289,6 +422,13 @@ impl Workd {
             .route("/tasks/list", post(handle_list_tasks))
             .route("/tasks/delete", post(handle_delete_task))
             .route("/tasks/nuke", post(handle_nuke))
+            .route("/sessions/start", post(handle_start_sessions))
+            .route("/sessions/list", post(handle_list_sessions))
+            .route("/sessions/show", post(handle_show_session))
+            .route("/sessions/pick", post(handle_pick_session))
+            .route("/sessions/reject", post(handle_reject_session))
+            .route("/sessions/delete", post(handle_delete_session))
+            .route("/sessions/stop", post(handle_stop_session))
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 request_logger,
@@ -306,7 +446,7 @@ impl Workd {
 
         tokio::select! {
             _ = async {
-                let _ = tokio::join!(deletion_handle, pool_handle);
+                let _ = tokio::join!(deletion_handle, pool_handle, session_handle);
             } => {}
             _ = force_shutdown_signal(self.logger.clone()) => {
                 self.logger.info("forced shutdown");
@@ -939,6 +1079,131 @@ async fn handle_clear_pool(
     Ok(Json(resp))
 }
 
+async fn handle_start_sessions(
+    State(state): State<AppState>,
+    Json(req): Json<StartSessionsRequest>,
+) -> Result<Json<StartSessionsResponse>, ApiError> {
+    let session_notify = state.session_notify.clone();
+    let pool_notify = state.pool_notify.clone();
+    let resp = run_blocking(move || start_sessions_inner(req, &pool_notify)).await?;
+    session_notify.notify_one();
+    Ok(Json(resp))
+}
+
+async fn handle_list_sessions(
+    Json(req): Json<ListSessionsRequest>,
+) -> Result<Json<Vec<SessionInfo>>, ApiError> {
+    Ok(Json(run_blocking(move || list_sessions_inner(req)).await?))
+}
+
+async fn handle_show_session(
+    Json(req): Json<ShowSessionRequest>,
+) -> Result<Json<ShowSessionResponse>, ApiError> {
+    Ok(Json(run_blocking(move || show_session_inner(req)).await?))
+}
+
+async fn handle_pick_session(
+    Json(req): Json<PickSessionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    run_blocking(move || pick_session_inner(req)).await?;
+    Ok(Json(serde_json::json!({})))
+}
+
+async fn handle_reject_session(
+    Json(req): Json<RejectSessionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    run_blocking(move || reject_session_inner(req)).await?;
+    Ok(Json(serde_json::json!({})))
+}
+
+async fn handle_delete_session(
+    State(state): State<AppState>,
+    Json(req): Json<DeleteSessionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let deletion_notify = state.deletion_notify.clone();
+    run_blocking(move || delete_session_inner(req, &deletion_notify)).await?;
+    Ok(Json(serde_json::json!({})))
+}
+
+async fn handle_stop_session(
+    State(state): State<AppState>,
+    Json(req): Json<StopSessionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session_id = req.id;
+
+    // Find and kill the child process.
+    let pid = {
+        let pids = state
+            .session_pids
+            .lock()
+            .map_err(|_| ApiError::internal("session pid lock poisoned"))?;
+        pids.get(&session_id).copied()
+    };
+
+    if let Some(pid) = pid {
+        // Send SIGTERM to the process.
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+
+        // Update status to abandoned.
+        run_blocking(move || {
+            let conn = db::open_database()?;
+            db::prepare_schema(&conn)?;
+            let now = unix_timestamp_seconds()?;
+            conn.execute(
+                "UPDATE sessions SET status = 'abandoned', updatedAt = ?1 WHERE id = ?2",
+                params![now, session_id],
+            )
+            .map_err(|e| CliError::with_source("failed to update session status", e))?;
+            Ok(())
+        })
+        .await?;
+    } else {
+        // Check if the session exists and is running.
+        let status: String = run_blocking(move || {
+            let conn = db::open_database()?;
+            db::prepare_schema(&conn)?;
+            conn.query_row(
+                "SELECT status FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .map_err(|source| match source {
+                rusqlite::Error::QueryReturnedNoRows => CliError::with_hint(
+                    "session not found",
+                    "run `work session list` to see existing sessions",
+                ),
+                other => CliError::with_source("failed to look up session", other),
+            })
+        })
+        .await?;
+
+        if status != "running" {
+            return Err(ApiError::from(CliError::with_hint(
+                format!("session is not running (status: {status})"),
+                "only running sessions can be stopped",
+            )));
+        }
+
+        // Session says running but we have no PID — it's orphaned.
+        run_blocking(move || {
+            let conn = db::open_database()?;
+            db::prepare_schema(&conn)?;
+            let now = unix_timestamp_seconds()?;
+            conn.execute(
+                "UPDATE sessions SET status = 'abandoned', updatedAt = ?1 WHERE id = ?2",
+                params![now, session_id],
+            )
+            .map_err(|e| CliError::with_source("failed to update session status", e))?;
+            Ok(())
+        })
+        .await?;
+    }
+
+    Ok(Json(serde_json::json!({})))
+}
+
 // ---------------------------------------------------------------------------
 // API handler implementations
 // ---------------------------------------------------------------------------
@@ -1279,6 +1544,1087 @@ fn clear_pool_inner() -> Result<ClearPoolResponse, CliError> {
     Ok(ClearPoolResponse {
         pool_worktrees: count,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Session handler implementations
+// ---------------------------------------------------------------------------
+
+fn start_sessions_inner(
+    req: StartSessionsRequest,
+    pool_notify: &Arc<Notify>,
+) -> Result<StartSessionsResponse, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let (project_id, project_name, project_path) =
+        detect_project(&conn, req.project.as_deref(), &req.cwd)?;
+
+    let global_cfg = config::load()?;
+    let max_per_issue = config::effective_max_sessions_per_issue(&global_cfg);
+    let agent_command = config::effective_agent_command(&global_cfg, &project_name, &project_path);
+    let agent_command_json = serde_json::to_string(&agent_command)
+        .map_err(|e| CliError::with_source("failed to serialize agent command", e))?;
+    let default_branch =
+        config::effective_default_branch(&global_cfg, &project_name, &project_path);
+
+    if req.num_agents > max_per_issue {
+        return Err(CliError::with_hint(
+            format!(
+                "requested {} agents exceeds max-sessions-per-issue ({})",
+                req.num_agents, max_per_issue
+            ),
+            "increase [orchestrator] max-sessions-per-issue in config or reduce --agents",
+        ));
+    }
+
+    // Get current max attempt number for this issue.
+    let max_attempt: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(attemptNo), 0) FROM sessions WHERE projectId = ?1 AND issueRef = ?2",
+            params![project_id, req.issue_ref],
+            |row| row.get(0),
+        )
+        .map_err(|e| CliError::with_source("failed to query max attempt", e))?;
+
+    // Get base_sha from project HEAD.
+    let base_sha = {
+        let output = std::process::Command::new("git")
+            .args(["-C", &project_path, "rev-parse", &default_branch])
+            .output()
+            .map_err(|e| CliError::with_source("failed to run git rev-parse", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(CliError::new(format!(
+                "git rev-parse HEAD failed: {}",
+                stderr.trim()
+            )));
+        }
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+
+    let now = unix_timestamp_seconds()?;
+    let adapter = GitWorktreeAdapter;
+    let mut sessions = Vec::new();
+
+    for i in 1..=req.num_agents {
+        let attempt_no = max_attempt + i as i64;
+        let task_name = generate_task_name();
+        let worktree_path = paths::worktree_path(&project_name, &task_name);
+
+        let claimed = try_claim_pool(
+            &conn,
+            &adapter,
+            project_id,
+            &project_path,
+            &task_name,
+            &worktree_path,
+            pool_notify,
+        );
+
+        if !claimed {
+            adapter.create(&project_path, &task_name, &worktree_path, &default_branch)?;
+        }
+
+        let worktree_path_str = worktree_path.to_string_lossy().to_string();
+
+        // Insert the task record.
+        conn.execute(
+            "INSERT INTO tasks (projectId, name, path, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![project_id, task_name, worktree_path_str, now, now],
+        )
+        .map_err(|e| CliError::with_source("failed to create task", e))?;
+        let task_id = conn.last_insert_rowid();
+
+        // Insert the session record.
+        conn.execute(
+            "INSERT INTO sessions (projectId, issueRef, attemptNo, taskId, branchName, baseSha, agentCommand, status, createdAt, updatedAt) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'planned', ?8, ?9)",
+            params![
+                project_id,
+                req.issue_ref,
+                attempt_no,
+                task_id,
+                task_name,
+                base_sha,
+                agent_command_json,
+                now,
+                now,
+            ],
+        )
+        .map_err(|e| CliError::with_source("failed to create session", e))?;
+        let session_id = conn.last_insert_rowid();
+
+        sessions.push(SessionInfo {
+            id: session_id,
+            issue_ref: req.issue_ref.clone(),
+            attempt_no,
+            branch_name: task_name,
+            status: "planned".to_string(),
+            task_path: Some(worktree_path_str),
+            base_sha: base_sha.clone(),
+            head_sha: None,
+            mergeable: None,
+            exit_code: None,
+            has_report: false,
+            lines_changed: None,
+            files_changed: None,
+            summary_excerpt: None,
+            project_name: Some(project_name.clone()),
+            created_at: now,
+            updated_at: now,
+        });
+    }
+
+    Ok(StartSessionsResponse { sessions })
+}
+
+fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let (query, query_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+        if let Some(ref issue_ref) = req.issue_ref {
+            if let Some(ref project) = req.project {
+                let (project_id, _, _) = detect_project(&conn, Some(project), "")?;
+                (
+                    "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
+                            t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
+                            s.createdAt, s.updatedAt, p.name \
+                     FROM sessions s \
+                     LEFT JOIN tasks t ON s.taskId = t.id \
+                     JOIN projects p ON s.projectId = p.id \
+                     WHERE s.issueRef = ?1 AND s.projectId = ?2 \
+                     ORDER BY s.attemptNo"
+                        .to_string(),
+                    vec![
+                        Box::new(issue_ref.clone()) as Box<dyn rusqlite::types::ToSql>,
+                        Box::new(project_id),
+                    ],
+                )
+            } else if let Some(ref cwd) = req.cwd {
+                let (project_id, _, _) = detect_project(&conn, None, cwd)?;
+                (
+                    "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
+                            t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
+                            s.createdAt, s.updatedAt, p.name \
+                     FROM sessions s \
+                     LEFT JOIN tasks t ON s.taskId = t.id \
+                     JOIN projects p ON s.projectId = p.id \
+                     WHERE s.issueRef = ?1 AND s.projectId = ?2 \
+                     ORDER BY s.attemptNo"
+                        .to_string(),
+                    vec![
+                        Box::new(issue_ref.clone()) as Box<dyn rusqlite::types::ToSql>,
+                        Box::new(project_id),
+                    ],
+                )
+            } else {
+                (
+                    "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
+                            t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
+                            s.createdAt, s.updatedAt, p.name \
+                     FROM sessions s \
+                     LEFT JOIN tasks t ON s.taskId = t.id \
+                     JOIN projects p ON s.projectId = p.id \
+                     WHERE s.issueRef = ?1 \
+                     ORDER BY s.attemptNo"
+                        .to_string(),
+                    vec![Box::new(issue_ref.clone()) as Box<dyn rusqlite::types::ToSql>],
+                )
+            }
+        } else if let Some(ref project) = req.project {
+            let (project_id, _, _) = detect_project(&conn, Some(project), "")?;
+            (
+                "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
+                        t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
+                        s.createdAt, s.updatedAt, p.name \
+                 FROM sessions s \
+                 LEFT JOIN tasks t ON s.taskId = t.id \
+                 JOIN projects p ON s.projectId = p.id \
+                 WHERE s.projectId = ?1 \
+                 ORDER BY s.attemptNo"
+                    .to_string(),
+                vec![Box::new(project_id) as Box<dyn rusqlite::types::ToSql>],
+            )
+        } else if let Some(ref cwd) = req.cwd {
+            let (project_id, _, _) = detect_project(&conn, None, cwd)?;
+            (
+                "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
+                        t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
+                        s.createdAt, s.updatedAt, p.name \
+                 FROM sessions s \
+                 LEFT JOIN tasks t ON s.taskId = t.id \
+                 JOIN projects p ON s.projectId = p.id \
+                 WHERE s.projectId = ?1 \
+                 ORDER BY s.attemptNo"
+                    .to_string(),
+                vec![Box::new(project_id) as Box<dyn rusqlite::types::ToSql>],
+            )
+        } else {
+            (
+                "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
+                        t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
+                        s.createdAt, s.updatedAt, p.name \
+                 FROM sessions s \
+                 LEFT JOIN tasks t ON s.taskId = t.id \
+                 JOIN projects p ON s.projectId = p.id \
+                 ORDER BY s.attemptNo"
+                    .to_string(),
+                vec![],
+            )
+        };
+
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        query_params.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn
+        .prepare(&query)
+        .map_err(|e| CliError::with_source("failed to prepare session query", e))?;
+
+    let rows = stmt
+        .query_map(params_refs.as_slice(), |row| {
+            let mergeable_int: Option<i32> = row.get(8)?;
+            Ok(SessionInfo {
+                id: row.get(0)?,
+                issue_ref: row.get(1)?,
+                attempt_no: row.get(2)?,
+                branch_name: row.get(3)?,
+                status: row.get(4)?,
+                task_path: row.get(5)?,
+                base_sha: row.get(6)?,
+                head_sha: row.get(7)?,
+                mergeable: mergeable_int.map(|v| v != 0),
+                exit_code: row.get(9)?,
+                has_report: false,
+                lines_changed: None,
+                files_changed: None,
+                summary_excerpt: None,
+                project_name: Some(row.get(12)?),
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })
+        .map_err(|e| CliError::with_source("failed to query sessions", e))?;
+
+    let mut sessions: Vec<SessionInfo> = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError::with_source("failed to load sessions", e))?;
+
+    // Enrich sessions with report/summary data.
+    for session in &mut sessions {
+        let (has_report, summary_excerpt, lines_changed, files_changed) =
+            get_session_summary_data(&conn, session.id);
+        session.has_report = has_report;
+        session.summary_excerpt = summary_excerpt;
+        session.lines_changed = lines_changed;
+        session.files_changed = files_changed;
+    }
+
+    Ok(sessions)
+}
+
+fn get_session_summary_data(
+    conn: &Connection,
+    session_id: i64,
+) -> (bool, Option<String>, Option<u32>, Option<u32>) {
+    let report_result: Result<(String, Option<String>), _> = conn.query_row(
+        "SELECT reportMd, summaryJson FROM session_reports WHERE sessionId = ?1",
+        params![session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    );
+
+    match report_result {
+        Ok((report_md, summary_json)) => {
+            let excerpt = report_md.lines().take(2).collect::<Vec<_>>().join(" ");
+            let excerpt = if excerpt.len() > 120 {
+                format!("{}...", &excerpt[..117])
+            } else {
+                excerpt
+            };
+
+            let (lines_changed, files_changed) = if let Some(ref json_str) = summary_json {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    (
+                        val.get("lines_changed")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32),
+                        val.get("files_changed")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32),
+                    )
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
+            (true, Some(excerpt), lines_changed, files_changed)
+        }
+        Err(_) => (false, None, None, None),
+    }
+}
+
+fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let row = conn
+        .query_row(
+            "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
+                    t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
+                    s.createdAt, s.updatedAt, p.name \
+             FROM sessions s \
+             LEFT JOIN tasks t ON s.taskId = t.id \
+             JOIN projects p ON s.projectId = p.id \
+             WHERE s.id = ?1",
+            params![req.id],
+            |row| {
+                let mergeable_int: Option<i32> = row.get(8)?;
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    mergeable_int.map(|v| v != 0),
+                    row.get::<_, Option<i32>>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, String>(12)?,
+                ))
+            },
+        )
+        .map_err(|source| match source {
+            rusqlite::Error::QueryReturnedNoRows => CliError::with_hint(
+                "session not found",
+                "run `work session list` to see existing sessions",
+            ),
+            other => CliError::with_source("failed to look up session", other),
+        })?;
+
+    let (
+        session_id,
+        issue_ref,
+        attempt_no,
+        branch_name,
+        status,
+        task_path,
+        base_sha,
+        head_sha,
+        mergeable,
+        exit_code,
+        created_at,
+        updated_at,
+        project_name,
+    ) = row;
+
+    let (has_report, summary_excerpt, lines_changed, files_changed) =
+        get_session_summary_data(&conn, session_id);
+
+    let report: Option<String> = conn
+        .query_row(
+            "SELECT reportMd FROM session_reports WHERE sessionId = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .ok();
+
+    Ok(ShowSessionResponse {
+        session: SessionInfo {
+            id: session_id,
+            issue_ref,
+            attempt_no,
+            branch_name,
+            status,
+            task_path,
+            base_sha,
+            head_sha,
+            mergeable,
+            exit_code,
+            has_report,
+            lines_changed,
+            files_changed,
+            summary_excerpt,
+            project_name: Some(project_name),
+            created_at,
+            updated_at,
+        },
+        report,
+    })
+}
+
+fn pick_session_inner(req: PickSessionRequest) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let now = unix_timestamp_seconds()?;
+
+    // Look up the session to get its project and issue.
+    let (project_id, issue_ref): (i64, String) = conn
+        .query_row(
+            "SELECT projectId, issueRef FROM sessions WHERE id = ?1",
+            params![req.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|source| match source {
+            rusqlite::Error::QueryReturnedNoRows => CliError::with_hint(
+                "session not found",
+                "run `work session list` to see existing sessions",
+            ),
+            other => CliError::with_source("failed to look up session", other),
+        })?;
+
+    // Update target session to 'picked'.
+    conn.execute(
+        "UPDATE sessions SET status = 'picked', updatedAt = ?1 WHERE id = ?2",
+        params![now, req.id],
+    )
+    .map_err(|e| CliError::with_source("failed to pick session", e))?;
+
+    // Abandon all other sessions for the same issue.
+    conn.execute(
+        "UPDATE sessions SET status = 'abandoned', updatedAt = ?1 \
+         WHERE projectId = ?2 AND issueRef = ?3 AND id != ?4 \
+         AND status NOT IN ('picked', 'rejected', 'abandoned', 'failed')",
+        params![now, project_id, issue_ref, req.id],
+    )
+    .map_err(|e| CliError::with_source("failed to abandon sibling sessions", e))?;
+
+    Ok(())
+}
+
+fn reject_session_inner(req: RejectSessionRequest) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let now = unix_timestamp_seconds()?;
+
+    let updated = conn
+        .execute(
+            "UPDATE sessions SET status = 'rejected', updatedAt = ?1 WHERE id = ?2",
+            params![now, req.id],
+        )
+        .map_err(|e| CliError::with_source("failed to reject session", e))?;
+
+    if updated == 0 {
+        return Err(CliError::with_hint(
+            "session not found",
+            "run `work session list` to see existing sessions",
+        ));
+    }
+
+    // Store rejection reason as a note in summaryJson if provided.
+    if let Some(reason) = req.reason {
+        let summary = serde_json::json!({ "rejection_reason": reason });
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO session_reports (sessionId, reportMd, summaryJson) \
+             VALUES (?1, COALESCE((SELECT reportMd FROM session_reports WHERE sessionId = ?1), ''), ?2)",
+            params![req.id, summary.to_string()],
+        );
+    }
+
+    Ok(())
+}
+
+fn delete_session_inner(
+    req: DeleteSessionRequest,
+    deletion_notify: &Arc<Notify>,
+) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    // Look up the session and its associated task.
+    let (task_id, status): (Option<i64>, String) = conn
+        .query_row(
+            "SELECT taskId, status FROM sessions WHERE id = ?1",
+            params![req.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|source| match source {
+            rusqlite::Error::QueryReturnedNoRows => CliError::with_hint(
+                "session not found",
+                "run `work session list` to see existing sessions",
+            ),
+            other => CliError::with_source("failed to look up session", other),
+        })?;
+
+    if status == "running" {
+        return Err(CliError::with_hint(
+            "cannot delete a running session",
+            "wait for the agent to finish, or restart the daemon to recover it",
+        ));
+    }
+
+    // Delete session report.
+    let _ = conn.execute(
+        "DELETE FROM session_reports WHERE sessionId = ?1",
+        params![req.id],
+    );
+
+    // Delete the session record.
+    conn.execute("DELETE FROM sessions WHERE id = ?1", params![req.id])
+        .map_err(|e| CliError::with_source("failed to delete session", e))?;
+
+    // Mark the associated task for deletion (force-remove the worktree).
+    if let Some(task_id) = task_id {
+        let updated = conn
+            .execute(
+                "UPDATE tasks SET status = 'deleting', deleteForce = 1 WHERE id = ?1 AND status = 'active'",
+                params![task_id],
+            )
+            .map_err(|e| CliError::with_source("failed to mark task for deletion", e))?;
+
+        if updated > 0 {
+            deletion_notify.notify_one();
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Background session worker
+// ---------------------------------------------------------------------------
+
+struct PlannedSession {
+    id: i64,
+    project_path: String,
+    project_name: String,
+    issue_ref: String,
+    branch_name: String,
+    base_sha: String,
+    agent_command: Vec<String>,
+    task_path: Option<String>,
+}
+
+async fn session_worker(
+    notify: Arc<Notify>,
+    semaphore: Arc<Semaphore>,
+    session_pids: Arc<Mutex<HashMap<i64, u32>>>,
+    mut shutdown: watch::Receiver<bool>,
+    logger: Logger,
+) {
+    let logger = logger.child("sessionWorker");
+
+    // Check for any planned sessions on startup.
+    notify.notify_one();
+
+    loop {
+        tokio::select! {
+            _ = notify.notified() => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+            _ = shutdown.changed() => {
+                logger.info("shutdown received, waiting for in-flight agents");
+                break;
+            }
+        }
+
+        schedule_planned_sessions(&logger, &semaphore, &session_pids, &shutdown).await;
+    }
+}
+
+async fn schedule_planned_sessions(
+    logger: &Logger,
+    semaphore: &Arc<Semaphore>,
+    session_pids: &Arc<Mutex<HashMap<i64, u32>>>,
+    shutdown: &watch::Receiver<bool>,
+) {
+    let planned = {
+        let query_logger = logger.clone();
+        match tokio::task::spawn_blocking(move || query_planned_sessions(&query_logger)).await {
+            Ok(Ok(sessions)) => sessions,
+            Ok(Err(e)) => {
+                logger.error(format!("failed to query planned sessions: {e}"));
+                return;
+            }
+            Err(e) => {
+                logger.error(format!("query planned sessions panicked: {e}"));
+                return;
+            }
+        }
+    };
+
+    if planned.is_empty() {
+        return;
+    }
+
+    logger.info(format!("scheduling {} planned session(s)", planned.len()));
+
+    for session in planned {
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                logger.error("agent semaphore closed");
+                return;
+            }
+        };
+
+        let logger = logger.clone();
+        let mut shutdown = shutdown.clone();
+        let pids = session_pids.clone();
+        tokio::spawn(async move {
+            run_agent_session(&logger, session, &pids, &mut shutdown).await;
+            drop(permit);
+        });
+    }
+}
+
+fn query_planned_sessions(logger: &Logger) -> Result<Vec<PlannedSession>, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id, p.path, p.name, s.issueRef, s.branchName, s.baseSha, s.agentCommand, t.path \
+             FROM sessions s \
+             JOIN projects p ON s.projectId = p.id \
+             LEFT JOIN tasks t ON s.taskId = t.id \
+             WHERE s.status = 'planned'",
+        )
+        .map_err(|e| CliError::with_source("failed to prepare planned session query", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let cmd_json: String = row.get(6)?;
+            let agent_command: Vec<String> =
+                serde_json::from_str(&cmd_json).unwrap_or_else(|_| vec![cmd_json]);
+            Ok(PlannedSession {
+                id: row.get(0)?,
+                project_path: row.get(1)?,
+                project_name: row.get(2)?,
+                issue_ref: row.get(3)?,
+                branch_name: row.get(4)?,
+                base_sha: row.get(5)?,
+                agent_command,
+                task_path: row.get(7)?,
+            })
+        })
+        .map_err(|e| CliError::with_source("failed to query planned sessions", e))?;
+
+    let sessions = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError::with_source("failed to load planned sessions", e))?;
+
+    if !sessions.is_empty() {
+        logger.info(format!("found {} planned session(s)", sessions.len()));
+    }
+
+    Ok(sessions)
+}
+
+async fn run_agent_session(
+    logger: &Logger,
+    session: PlannedSession,
+    session_pids: &Arc<Mutex<HashMap<i64, u32>>>,
+    shutdown: &mut watch::Receiver<bool>,
+) {
+    let session_id = session.id;
+
+    let task_path = match &session.task_path {
+        Some(p) => p.clone(),
+        None => {
+            logger.error(format!(
+                "session {session_id} has no worktree path, marking failed"
+            ));
+            let _ = update_session_status(session_id, "failed");
+            return;
+        }
+    };
+
+    logger.info(format!(
+        "starting agent for session {} ({})",
+        session_id, session.branch_name
+    ));
+
+    // Mark session as running.
+    if let Err(e) = update_session_status(session_id, "running") {
+        logger.error(format!(
+            "failed to mark session {session_id} as running: {e}"
+        ));
+        return;
+    }
+
+    let report_path = Path::new(&task_path)
+        .join(".work/session-report.md")
+        .to_string_lossy()
+        .to_string();
+    let system_prompt = build_session_system_prompt(&session, &task_path, &report_path);
+
+    // Build the command with placeholder replacement.
+    if session.agent_command.is_empty() {
+        logger.error(format!("session {session_id} has empty agent command"));
+        let _ = update_session_status(session_id, "failed");
+        return;
+    }
+
+    let resolved_args: Vec<String> = session
+        .agent_command
+        .iter()
+        .map(|arg| {
+            arg.replace("{issue}", &session.issue_ref)
+                .replace("{system_prompt}", &system_prompt)
+                .replace("{report_path}", &report_path)
+        })
+        .collect();
+
+    // Ensure .work directory exists in the worktree.
+    let work_dir = Path::new(&task_path).join(".work");
+    let _ = std::fs::create_dir_all(&work_dir);
+
+    // Open log files for agent stdout/stderr.
+    let stdout_path = work_dir.join("session-stdout.log");
+    let stderr_path = work_dir.join("session-stderr.log");
+    let stdout_file = match std::fs::File::create(&stdout_path) {
+        Ok(f) => f,
+        Err(e) => {
+            logger.error(format!(
+                "failed to create stdout log for session {session_id}: {e}"
+            ));
+            let _ = update_session_status(session_id, "failed");
+            return;
+        }
+    };
+    let stderr_file = match std::fs::File::create(&stderr_path) {
+        Ok(f) => f,
+        Err(e) => {
+            logger.error(format!(
+                "failed to create stderr log for session {session_id}: {e}"
+            ));
+            let _ = update_session_status(session_id, "failed");
+            return;
+        }
+    };
+
+    // Spawn the agent command directly (no shell).
+    let mut child = match tokio::process::Command::new(&resolved_args[0])
+        .args(&resolved_args[1..])
+        .current_dir(&task_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout_file)
+        .stderr(stderr_file)
+        .env("WORK_SESSION_ID", session_id.to_string())
+        .env("WORK_SESSION_ISSUE", &session.issue_ref)
+        .env("WORK_SESSION_WORKTREE", &task_path)
+        .env("WORK_SESSION_PROJECT", &session.project_name)
+        .env("WORK_SESSION_BASE_SHA", &session.base_sha)
+        .env("WORK_SESSION_REPORT_PATH", &report_path)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            logger.error(format!(
+                "failed to spawn agent for session {session_id}: {e}"
+            ));
+            let _ = update_session_status(session_id, "failed");
+            return;
+        }
+    };
+
+    // Register the child PID so `stop` can kill it.
+    if let Some(pid) = child.id() {
+        if let Ok(mut pids) = session_pids.lock() {
+            pids.insert(session_id, pid);
+        }
+        // Persist PID to DB for orphan detection across restarts.
+        let _ = persist_session_pid(session_id, pid);
+    }
+
+    // Wait for the child, but kill it on shutdown.
+    let exit_code = tokio::select! {
+        result = child.wait() => {
+            match result {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(e) => {
+                    logger.error(format!(
+                        "failed to wait on agent for session {session_id}: {e}"
+                    ));
+                    let _ = update_session_status(session_id, "failed");
+                    deregister_session_pid(session_pids, session_id);
+                    return;
+                }
+            }
+        }
+        _ = shutdown.changed() => {
+            logger.info(format!("killing agent for session {session_id} (shutdown)"));
+            let _ = child.kill().await;
+            let _ = update_session_status(session_id, "planned");
+            deregister_session_pid(session_pids, session_id);
+            return;
+        }
+    };
+
+    // Deregister PID.
+    deregister_session_pid(session_pids, session_id);
+
+    logger.info(format!(
+        "agent for session {session_id} exited with code {exit_code}"
+    ));
+
+    // Collect results.
+    let collect_logger = logger.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        collect_session_results(&collect_logger, &session, &task_path, exit_code)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => {
+            logger.info(format!("session {session_id} collected successfully"));
+        }
+        Ok(Err(e)) => {
+            logger.error(format!("failed to collect session {session_id}: {e}"));
+            let _ = update_session_status(session_id, "failed");
+        }
+        Err(e) => {
+            logger.error(format!(
+                "collect task panicked for session {session_id}: {e}"
+            ));
+            let _ = update_session_status(session_id, "failed");
+        }
+    }
+}
+
+const DEFAULT_SESSION_SYSTEM_PROMPT: &str = "\
+You are an autonomous coding agent working on a session (attempt #{attempt}) \
+for the project \"{project}\". \
+Your task is described in the user prompt.
+
+## Instructions
+
+- Implement the requested changes directly. Do not ask for clarification.
+- Do not enter planning mode. Implement changes immediately.
+- Commit your work when done.
+
+## Context
+
+- Working directory: {worktree}
+- Base commit: {base_sha}
+- Branch: {branch}
+
+## Report
+
+When you are finished, write a brief report to: {report_path}
+
+The report should be a Markdown file containing:
+1. A one-line summary of what was done
+2. A list of files changed and why
+3. How to test the changes
+4. Any open questions or concerns";
+
+fn build_session_system_prompt(
+    session: &PlannedSession,
+    task_path: &str,
+    report_path: &str,
+) -> String {
+    let template = config::load()
+        .ok()
+        .and_then(|c| c.orchestrator)
+        .and_then(|o| o.system_prompt);
+
+    let template = template.as_deref().unwrap_or(DEFAULT_SESSION_SYSTEM_PROMPT);
+
+    template
+        .replace("{attempt}", &session.id.to_string())
+        .replace("{project}", &session.project_name)
+        .replace("{worktree}", task_path)
+        .replace("{base_sha}", &session.base_sha)
+        .replace("{branch}", &session.branch_name)
+        .replace("{report_path}", report_path)
+        .replace("{issue}", &session.issue_ref)
+}
+
+fn deregister_session_pid(session_pids: &Arc<Mutex<HashMap<i64, u32>>>, session_id: i64) {
+    if let Ok(mut pids) = session_pids.lock() {
+        pids.remove(&session_id);
+    }
+    let _ = clear_session_pid(session_id);
+}
+
+fn persist_session_pid(session_id: i64, pid: u32) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+    conn.execute(
+        "UPDATE sessions SET pid = ?1 WHERE id = ?2",
+        params![pid as i64, session_id],
+    )
+    .map_err(|e| CliError::with_source("failed to persist session pid", e))?;
+    Ok(())
+}
+
+fn clear_session_pid(session_id: i64) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+    conn.execute(
+        "UPDATE sessions SET pid = NULL WHERE id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| CliError::with_source("failed to clear session pid", e))?;
+    Ok(())
+}
+
+fn update_session_status(session_id: i64, status: &str) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+    let now = unix_timestamp_seconds()?;
+    conn.execute(
+        "UPDATE sessions SET status = ?1, updatedAt = ?2 WHERE id = ?3",
+        params![status, now, session_id],
+    )
+    .map_err(|e| CliError::with_source("failed to update session status", e))?;
+    Ok(())
+}
+
+fn collect_session_results(
+    logger: &Logger,
+    session: &PlannedSession,
+    task_path: &str,
+    exit_code: i32,
+) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+    let now = unix_timestamp_seconds()?;
+
+    // Capture head_sha.
+    let head_sha = {
+        let output = std::process::Command::new("git")
+            .args(["-C", task_path, "rev-parse", "HEAD"])
+            .output()
+            .map_err(|e| CliError::with_source("failed to run git rev-parse", e))?;
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            None
+        }
+    };
+
+    // Compute diffstat.
+    let (lines_changed, files_changed) = if let Some(ref head) = head_sha {
+        let diff_stat = std::process::Command::new("git")
+            .args([
+                "-C",
+                &session.project_path,
+                "diff",
+                "--numstat",
+                &format!("{}..{}", session.base_sha, head),
+            ])
+            .output();
+
+        match diff_stat {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let mut total_lines: u32 = 0;
+                let mut file_count: u32 = 0;
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    if parts.len() >= 2 {
+                        file_count += 1;
+                        if let (Ok(added), Ok(removed)) =
+                            (parts[0].parse::<u32>(), parts[1].parse::<u32>())
+                        {
+                            total_lines += added + removed;
+                        }
+                    }
+                }
+                (Some(total_lines), Some(file_count))
+            }
+            _ => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
+    // Rebase probe (mergeable check).
+    let mergeable = if let Some(ref head) = head_sha {
+        // Get current trunk HEAD.
+        let trunk_output = std::process::Command::new("git")
+            .args(["-C", &session.project_path, "rev-parse", "HEAD"])
+            .output();
+
+        if let Ok(trunk_out) = trunk_output {
+            if trunk_out.status.success() {
+                let trunk_head = String::from_utf8_lossy(&trunk_out.stdout)
+                    .trim()
+                    .to_string();
+                let merge_tree = std::process::Command::new("git")
+                    .args([
+                        "-C",
+                        &session.project_path,
+                        "merge-tree",
+                        &session.base_sha,
+                        &trunk_head,
+                        head,
+                    ])
+                    .output();
+                match merge_tree {
+                    Ok(output) => Some(output.status.success()),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Read the report file.
+    let report_path = Path::new(&task_path).join(".work/session-report.md");
+    let report_md = std::fs::read_to_string(&report_path).ok();
+
+    // Store results.
+    let mergeable_int = mergeable.map(|b| if b { 1 } else { 0 });
+
+    conn.execute(
+        "UPDATE sessions SET headSha = ?1, mergeable = ?2, exitCode = ?3, status = ?4, updatedAt = ?5 WHERE id = ?6",
+        params![head_sha, mergeable_int, exit_code, "reported", now, session.id],
+    )
+    .map_err(|e| CliError::with_source("failed to update session results", e))?;
+
+    // Store report and summary data.
+    if let Some(ref report) = report_md {
+        let summary = serde_json::json!({
+            "lines_changed": lines_changed,
+            "files_changed": files_changed,
+        });
+
+        conn.execute(
+            "INSERT OR REPLACE INTO session_reports (sessionId, reportMd, summaryJson) VALUES (?1, ?2, ?3)",
+            params![session.id, report, summary.to_string()],
+        )
+        .map_err(|e| CliError::with_source("failed to store session report", e))?;
+    } else if lines_changed.is_some() || files_changed.is_some() {
+        // Store summary data even without a report.
+        let summary = serde_json::json!({
+            "lines_changed": lines_changed,
+            "files_changed": files_changed,
+        });
+
+        conn.execute(
+            "INSERT OR REPLACE INTO session_reports (sessionId, reportMd, summaryJson) VALUES (?1, '', ?2)",
+            params![session.id, summary.to_string()],
+        )
+        .map_err(|e| CliError::with_source("failed to store session summary", e))?;
+    }
+
+    logger.info(format!(
+        "session {} collected: exit_code={}, head_sha={}, mergeable={:?}, lines_changed={:?}, files_changed={:?}, has_report={}",
+        session.id,
+        exit_code,
+        head_sha.as_deref().unwrap_or("none"),
+        mergeable,
+        lines_changed,
+        files_changed,
+        report_md.is_some()
+    ));
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

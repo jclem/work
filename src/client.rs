@@ -8,8 +8,10 @@ use crate::error::CliError;
 use crate::paths;
 use crate::workd::{
     ClearPoolResponse, CreateProjectRequest, CreateProjectResponse, CreateTaskRequest,
-    CreateTaskResponse, DeleteProjectRequest, DeleteTaskRequest, DetectProjectRequest,
-    ListTasksRequest, NukeResponse, ProjectInfo, TaskInfo,
+    CreateTaskResponse, DeleteProjectRequest, DeleteSessionRequest, DeleteTaskRequest,
+    DetectProjectRequest, ListSessionsRequest, ListTasksRequest, NukeResponse, PickSessionRequest,
+    ProjectInfo, RejectSessionRequest, SessionInfo, ShowSessionRequest, ShowSessionResponse,
+    StartSessionsRequest, StartSessionsResponse, StopSessionRequest, TaskInfo,
 };
 
 fn daemon_error() -> CliError {
@@ -192,6 +194,72 @@ pub fn nuke() -> Result<NukeResponse, CliError> {
 
 pub fn clear_pool() -> Result<ClearPoolResponse, CliError> {
     post_json("/pool/clear", &serde_json::json!({}))
+}
+
+// ---------------------------------------------------------------------------
+// Session operations
+// ---------------------------------------------------------------------------
+
+pub fn start_sessions(
+    issue_ref: &str,
+    num_agents: u32,
+    project: Option<&str>,
+    cwd: &str,
+) -> Result<StartSessionsResponse, CliError> {
+    post_json(
+        "/sessions/start",
+        &StartSessionsRequest {
+            issue_ref: issue_ref.to_string(),
+            num_agents,
+            project: project.map(|s| s.to_string()),
+            cwd: cwd.to_string(),
+        },
+    )
+}
+
+pub fn list_sessions(
+    issue_ref: Option<&str>,
+    project: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<Vec<SessionInfo>, CliError> {
+    post_json(
+        "/sessions/list",
+        &ListSessionsRequest {
+            issue_ref: issue_ref.map(|s| s.to_string()),
+            project: project.map(|s| s.to_string()),
+            cwd: cwd.map(|s| s.to_string()),
+        },
+    )
+}
+
+pub fn show_session(id: i64) -> Result<ShowSessionResponse, CliError> {
+    post_json("/sessions/show", &ShowSessionRequest { id })
+}
+
+pub fn pick_session(id: i64) -> Result<(), CliError> {
+    let _: serde_json::Value = post_json("/sessions/pick", &PickSessionRequest { id })?;
+    Ok(())
+}
+
+pub fn reject_session(id: i64, reason: Option<&str>) -> Result<(), CliError> {
+    let _: serde_json::Value = post_json(
+        "/sessions/reject",
+        &RejectSessionRequest {
+            id,
+            reason: reason.map(|s| s.to_string()),
+        },
+    )?;
+    Ok(())
+}
+
+pub fn stop_session(id: i64) -> Result<(), CliError> {
+    let _: serde_json::Value = post_json("/sessions/stop", &StopSessionRequest { id })?;
+    Ok(())
+}
+
+pub fn delete_session(id: i64) -> Result<(), CliError> {
+    let _: serde_json::Value = post_json("/sessions/delete", &DeleteSessionRequest { id })?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

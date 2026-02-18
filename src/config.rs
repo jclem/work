@@ -10,6 +10,7 @@ use crate::paths;
 pub struct Config {
     pub projects: Option<HashMap<String, ProjectConfig>>,
     pub daemon: Option<DaemonConfig>,
+    pub orchestrator: Option<OrchestratorConfig>,
     #[serde(rename = "default-branch")]
     pub default_branch: Option<String>,
 }
@@ -17,6 +18,7 @@ pub struct Config {
 #[derive(Debug, Default, Deserialize)]
 pub struct ProjectConfig {
     pub hooks: Option<HooksConfig>,
+    pub orchestrator: Option<OrchestratorConfig>,
     #[serde(rename = "pool-size")]
     pub pool_size: Option<u32>,
     #[serde(rename = "default-branch")]
@@ -50,6 +52,29 @@ pub struct HooksConfig {
     #[serde(rename = "new-after")]
     pub new_after: Option<String>,
 }
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OrchestratorConfig {
+    #[serde(rename = "agent-command")]
+    pub agent_command: Option<Vec<String>>,
+    #[serde(rename = "system-prompt")]
+    pub system_prompt: Option<String>,
+    #[serde(rename = "max-agents-in-flight")]
+    pub max_agents_in_flight: Option<u32>,
+    #[serde(rename = "max-sessions-per-issue")]
+    pub max_sessions_per_issue: Option<u32>,
+}
+
+pub const DEFAULT_AGENT_COMMAND: &[&str] = &[
+    "claude",
+    "-p",
+    "--dangerously-skip-permissions",
+    "--disallowedTools",
+    "EnterPlanMode",
+    "--system-prompt",
+    "{system_prompt}",
+    "{issue}",
+];
 
 pub fn load() -> Result<Config, CliError> {
     let path = paths::config_path();
@@ -149,6 +174,65 @@ pub fn effective_default_branch(
     }
 
     "main".to_string()
+}
+
+/// Returns the effective agent command for a project. Checks project-level
+/// .work/config.toml first, then global per-project config, then global
+/// orchestrator config. Returns a vec of [binary, args...] with placeholders
+/// `{issue}`, `{system_prompt}`, and `{report_path}` to be replaced at runtime.
+pub fn effective_agent_command(
+    global_config: &Config,
+    project_name: &str,
+    project_path: &str,
+) -> Vec<String> {
+    // Project-level .work/config.toml takes priority.
+    if let Ok(project_cfg) = load_project_config(project_path)
+        && let Some(orch) = &project_cfg.orchestrator
+        && let Some(cmd) = &orch.agent_command
+    {
+        return cmd.clone();
+    }
+
+    // Fall back to global per-project config.
+    if let Some(projects) = &global_config.projects
+        && let Some(project_cfg) = projects.get(project_name)
+        && let Some(orch) = &project_cfg.orchestrator
+        && let Some(cmd) = &orch.agent_command
+    {
+        return cmd.clone();
+    }
+
+    // Fall back to global orchestrator config.
+    if let Some(orch) = &global_config.orchestrator
+        && let Some(cmd) = &orch.agent_command
+    {
+        return cmd.clone();
+    }
+
+    DEFAULT_AGENT_COMMAND
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Returns the effective max agents in flight. Checks global orchestrator
+/// config. Defaults to 4.
+pub fn effective_max_agents(global_config: &Config) -> u32 {
+    global_config
+        .orchestrator
+        .as_ref()
+        .and_then(|o| o.max_agents_in_flight)
+        .unwrap_or(4)
+}
+
+/// Returns the effective max sessions per issue. Checks global orchestrator
+/// config. Defaults to 5.
+pub fn effective_max_sessions_per_issue(global_config: &Config) -> u32 {
+    global_config
+        .orchestrator
+        .as_ref()
+        .and_then(|o| o.max_sessions_per_issue)
+        .unwrap_or(5)
 }
 
 pub fn hook_script<'a>(config: &'a Config, project_name: &str, hook_name: &str) -> Option<&'a str> {

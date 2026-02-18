@@ -5,4 +5,5 @@ pub mod doctor;
 pub mod init;
 pub mod pool;
 pub mod projects;
+pub mod sessions;
 pub mod tasks;
