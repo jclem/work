@@ -28,7 +28,7 @@ cargo install --path .
 # Initialize your shell (add to your shell config)
 eval "$(work init zsh)"   # or bash, fish
 
-# Start the daemon
+# Start the daemon (or use `work daemon install` on macOS for auto-start)
 work daemon start
 
 # Register a project
@@ -103,10 +103,13 @@ work projects delete my-project   # Delete project and its worktrees
 ```bash
 work daemon start                 # Start (daemonizes by default)
 work daemon start --attach        # Run in the foreground
+work daemon start --force         # Replace an already-running daemon
 work daemon stop                  # Stop
 work daemon restart               # Restart
 work daemon pid                   # Print PID
 work daemon socket-path           # Print socket path (for scripting)
+work daemon install               # Install as a Launch Agent (macOS)
+work daemon uninstall             # Uninstall the Launch Agent (macOS)
 ```
 
 ## Configuration
