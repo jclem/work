@@ -159,7 +159,7 @@ pub struct ShowSessionRequest {
     pub id: i64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShowSessionResponse {
     pub session: SessionInfo,
     pub report: Option<String>,
@@ -186,7 +186,7 @@ pub struct StopSessionRequest {
     pub id: i64,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: i64,
     pub issue_ref: String,
