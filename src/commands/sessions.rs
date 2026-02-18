@@ -1,3 +1,5 @@
+use std::io::{self, IsTerminal, Read};
+
 use crate::cli::{
     SessionCommand, SessionDeleteArgs, SessionListArgs, SessionOpenArgs, SessionPickArgs,
     SessionRankArgs, SessionRejectArgs, SessionShowArgs, SessionStartArgs, SessionStopArgs,
@@ -21,13 +23,18 @@ pub fn execute(command: SessionCommand) -> Result<(), CliError> {
 }
 
 fn start(args: SessionStartArgs) -> Result<(), CliError> {
+    let issue = match args.issue {
+        Some(text) => text,
+        None => read_stdin_issue()?,
+    };
+
     let cwd = std::env::current_dir()
         .map_err(|e| CliError::with_source("failed to read current directory", e))?
         .canonicalize()
         .map_err(|e| CliError::with_source("failed to canonicalize current directory", e))?;
     let cwd_str = cwd.to_string_lossy();
 
-    let resp = client::start_sessions(&args.issue, args.agents, args.project.as_deref(), &cwd_str)?;
+    let resp = client::start_sessions(&issue, args.agents, args.project.as_deref(), &cwd_str)?;
 
     error::print_success(&format!(
         "Started {} session(s) for issue",
@@ -260,6 +267,36 @@ fn open(args: SessionOpenArgs) -> Result<(), CliError> {
 
     shell_eval(&format!("cd \"{path}\""));
     Ok(())
+}
+
+/// Read the issue description from stdin.
+///
+/// Returns an error if stdin is a terminal (nothing piped/redirected) or if
+/// the resulting text is empty.
+fn read_stdin_issue() -> Result<String, CliError> {
+    let stdin = io::stdin();
+    if stdin.lock().is_terminal() {
+        return Err(CliError::with_hint(
+            "no issue provided",
+            "pass the issue as an argument or pipe it via stdin",
+        ));
+    }
+
+    let mut buf = String::new();
+    stdin
+        .lock()
+        .read_to_string(&mut buf)
+        .map_err(|e| CliError::with_source("failed to read issue from stdin", e))?;
+
+    let trimmed = buf.trim().to_string();
+    if trimmed.is_empty() {
+        return Err(CliError::with_hint(
+            "empty issue from stdin",
+            "pass the issue as an argument or pipe it via stdin",
+        ));
+    }
+
+    Ok(trimmed)
 }
 
 fn truncate(s: &str, max: usize) -> String {

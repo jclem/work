@@ -128,9 +128,9 @@ pub enum SessionCommand {
 
 #[derive(Debug, Args)]
 pub struct SessionStartArgs {
-    /// Issue description (freeform text).
-    #[arg(long)]
-    pub issue: String,
+    /// Issue description (freeform text). Reads from stdin if omitted.
+    #[arg(value_name = "ISSUE")]
+    pub issue: Option<String>,
 
     /// Number of parallel agent sessions to start.
     #[arg(long, default_value_t = 1)]
@@ -581,5 +581,46 @@ mod tests {
                 command: DaemonCommand::Restart(_),
             }
         ));
+    }
+
+    #[test]
+    fn session_start_parses_positional_issue() {
+        let cli = Cli::try_parse_from(["work", "session", "start", "fix the login bug"]).unwrap();
+        if let Command::Session {
+            command: SessionCommand::Start(args),
+        } = cli.command
+        {
+            assert_eq!(args.issue.as_deref(), Some("fix the login bug"));
+        } else {
+            panic!("expected Command::Session Start");
+        }
+    }
+
+    #[test]
+    fn session_start_parses_without_issue() {
+        let cli = Cli::try_parse_from(["work", "session", "start"]).unwrap();
+        if let Command::Session {
+            command: SessionCommand::Start(args),
+        } = cli.command
+        {
+            assert!(args.issue.is_none());
+        } else {
+            panic!("expected Command::Session Start");
+        }
+    }
+
+    #[test]
+    fn session_start_parses_with_agents_flag() {
+        let cli =
+            Cli::try_parse_from(["work", "session", "start", "my issue", "--agents", "3"]).unwrap();
+        if let Command::Session {
+            command: SessionCommand::Start(args),
+        } = cli.command
+        {
+            assert_eq!(args.issue.as_deref(), Some("my issue"));
+            assert_eq!(args.agents, 3);
+        } else {
+            panic!("expected Command::Session Start");
+        }
     }
 }
