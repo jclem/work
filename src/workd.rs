@@ -1240,9 +1240,11 @@ async fn handle_list_tasks(
 }
 
 async fn handle_delete_task(
+    State(state): State<AppState>,
     Json(req): Json<DeleteTaskRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    run_blocking(move || delete_task_inner(req)).await?;
+    let deletion_notify = state.deletion_notify.clone();
+    run_blocking(move || delete_task_inner(req, &deletion_notify)).await?;
     Ok(Json(serde_json::json!({})))
 }
 
@@ -1617,32 +1619,31 @@ fn list_tasks_inner(req: ListTasksRequest) -> Result<Vec<TaskInfo>, CliError> {
     }
 }
 
-fn delete_task_inner(req: DeleteTaskRequest) -> Result<(), CliError> {
+fn delete_task_inner(
+    req: DeleteTaskRequest,
+    deletion_notify: &Arc<Notify>,
+) -> Result<(), CliError> {
     let conn = db::open_database()?;
     db::prepare_schema(&conn)?;
 
-    let (project_id, _, project_path) = detect_project(&conn, req.project.as_deref(), &req.cwd)?;
+    let (project_id, _, _) = detect_project(&conn, req.project.as_deref(), &req.cwd)?;
     let force = req.force.unwrap_or(false);
 
-    let (task_id, task_path): (i64, String) = conn
-        .query_row(
-            "SELECT id, path FROM tasks WHERE projectId = ?1 AND name = ?2 AND status = 'active'",
-            params![project_id, req.name],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+    let updated = conn
+        .execute(
+            "UPDATE tasks SET status = 'deleting', deleteForce = ?1 WHERE projectId = ?2 AND name = ?3 AND status = 'active'",
+            params![force as i32, project_id, req.name],
         )
-        .map_err(|source| match source {
-            rusqlite::Error::QueryReturnedNoRows => {
-                CliError::with_hint("task not found", "run `work list` to see existing tasks")
-            }
-            other => CliError::with_source("failed to look up task", other),
-        })?;
+        .map_err(|e| CliError::with_source("failed to mark task for deletion", e))?;
 
-    let adapter = GitWorktreeAdapter;
-    adapter.remove(&project_path, &req.name, Path::new(&task_path), force)?;
+    if updated == 0 {
+        return Err(CliError::with_hint(
+            "task not found",
+            "run `work list` to see existing tasks",
+        ));
+    }
 
-    conn.execute("DELETE FROM tasks WHERE id = ?1", params![task_id])
-        .map_err(|e| CliError::with_source("failed to delete task from database", e))?;
-
+    deletion_notify.notify_one();
     Ok(())
 }
 
