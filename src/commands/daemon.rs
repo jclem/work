@@ -45,6 +45,8 @@ pub async fn execute(command: DaemonCommand, logger: Logger) -> Result<(), CliEr
             error::print_success(&format!("stopped daemon (pid {pid})"));
             Ok(())
         }
+        DaemonCommand::Install => super::daemon_install::install(),
+        DaemonCommand::Uninstall => super::daemon_install::uninstall(),
         DaemonCommand::Restart(args) => {
             if let Ok(pid) = read_pid() {
                 kill_pid(pid)?;

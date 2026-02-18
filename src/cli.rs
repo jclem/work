@@ -86,6 +86,10 @@ pub enum DaemonCommand {
     Stop,
     /// Restart the daemon.
     Restart(DaemonRestartArgs),
+    /// Install the daemon as a Launch Agent (macOS).
+    Install,
+    /// Uninstall the daemon Launch Agent (macOS).
+    Uninstall,
 }
 
 #[derive(Debug, Args)]

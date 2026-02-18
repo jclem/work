@@ -1153,6 +1153,7 @@ dependencies = [
  "axum",
  "clap",
  "clap_complete",
+ "libc",
  "rand",
  "rusqlite",
  "serde",
