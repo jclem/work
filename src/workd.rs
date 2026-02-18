@@ -65,6 +65,12 @@ pub struct DeleteProjectRequest {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DetectProjectRequest {
+    pub project: Option<String>,
+    pub cwd: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct CreateTaskRequest {
     pub name: Option<String>,
     pub project: Option<String>,
@@ -277,6 +283,7 @@ impl Workd {
             .route("/projects/create", post(handle_create_project))
             .route("/projects/list", post(handle_list_projects))
             .route("/projects/delete", post(handle_delete_project))
+            .route("/projects/detect", post(handle_detect_project))
             .route("/tasks/create", post(handle_create_task))
             .route("/tasks/list", post(handle_list_tasks))
             .route("/tasks/delete", post(handle_delete_task))
@@ -888,6 +895,14 @@ async fn handle_delete_project(
     Ok(Json(serde_json::json!({})))
 }
 
+async fn handle_detect_project(
+    Json(req): Json<DetectProjectRequest>,
+) -> Result<Json<ProjectInfo>, ApiError> {
+    Ok(Json(
+        run_blocking(move || detect_project_handler(req)).await?,
+    ))
+}
+
 async fn handle_create_task(
     State(state): State<AppState>,
     Json(req): Json<CreateTaskRequest>,
@@ -1015,6 +1030,27 @@ fn delete_project_inner(req: DeleteProjectRequest) -> Result<(), CliError> {
     }
 
     Ok(())
+}
+
+fn detect_project_handler(req: DetectProjectRequest) -> Result<ProjectInfo, CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    let (id, _, _) = detect_project(&conn, req.project.as_deref(), &req.cwd)?;
+
+    conn.query_row(
+        "SELECT name, path, createdAt, updatedAt FROM projects WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(ProjectInfo {
+                name: row.get(0)?,
+                path: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        },
+    )
+    .map_err(|e| CliError::with_source("failed to look up project", e))
 }
 
 fn create_task_inner(
@@ -1276,19 +1312,35 @@ fn detect_project(
         })
         .map_err(|source| CliError::with_source("failed to query projects", source))?;
 
+    let projects: Vec<(i64, String, String)> = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| CliError::with_source("failed to load project", source))?;
+
+    // First: try matching cwd against project repo paths.
     let mut best: Option<(i64, String, String)> = None;
     let mut best_len = 0;
 
-    for row in rows {
-        let (id, name, path) =
-            row.map_err(|source| CliError::with_source("failed to load project", source))?;
-
-        if cwd.starts_with(&path)
+    for (id, name, path) in &projects {
+        if cwd.starts_with(path)
             && (cwd.len() == path.len() || cwd.as_bytes()[path.len()] == b'/')
             && path.len() > best_len
         {
             best_len = path.len();
-            best = Some((id, name, path));
+            best = Some((*id, name.clone(), path.clone()));
+        }
+    }
+
+    // Second: try matching cwd against managed worktree paths.
+    if best.is_none() {
+        for (id, name, path) in &projects {
+            let wt_base = paths::project_worktrees_dir(name);
+            let wt_base_str = wt_base.to_string_lossy();
+            if cwd.starts_with(wt_base_str.as_ref())
+                && (cwd.len() == wt_base_str.len() || cwd.as_bytes()[wt_base_str.len()] == b'/')
+            {
+                best = Some((*id, name.clone(), path.clone()));
+                break;
+            }
         }
     }
 

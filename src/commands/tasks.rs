@@ -53,13 +53,22 @@ pub fn cd(args: CdArgs) -> Result<(), CliError> {
         .map_err(|e| CliError::with_source("failed to canonicalize current directory", e))?;
     let cwd_str = cwd.to_string_lossy().to_string();
 
-    let tasks = client::list_tasks(args.project.as_deref(), Some(&cwd_str), false)?;
+    match args.name {
+        Some(name) => {
+            let tasks = client::list_tasks(args.project.as_deref(), Some(&cwd_str), false)?;
 
-    let task = tasks.iter().find(|t| t.name == args.name).ok_or_else(|| {
-        CliError::with_hint("task not found", "Run `work list` to see available tasks.")
-    })?;
+            let task = tasks.iter().find(|t| t.name == name).ok_or_else(|| {
+                CliError::with_hint("task not found", "Run `work list` to see available tasks.")
+            })?;
 
-    shell_eval(&format!("cd \"{}\"", task.path));
+            shell_eval(&format!("cd \"{}\"", task.path));
+        }
+        None => {
+            let project = client::detect_project(args.project.as_deref(), &cwd_str)?;
+            shell_eval(&format!("cd \"{}\"", project.path));
+        }
+    }
+
     Ok(())
 }
 
