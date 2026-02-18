@@ -108,6 +108,7 @@ pub enum ConfigCommand {
 #[derive(Debug, Subcommand)]
 pub enum SessionCommand {
     /// Start new sessions for an issue.
+    #[command(alias = "new", alias = "create")]
     Start(SessionStartArgs),
     /// List sessions.
     #[command(alias = "ls")]
