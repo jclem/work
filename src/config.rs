@@ -104,19 +104,18 @@ pub fn load_project_config(project_path: &str) -> Result<ProjectConfig, CliError
 /// neither specifies a pool size.
 pub fn effective_pool_size(global_config: &Config, project_name: &str, project_path: &str) -> u32 {
     // Project-level .work/config.toml takes priority.
-    if let Ok(project_cfg) = load_project_config(project_path) {
-        if let Some(size) = project_cfg.pool_size {
-            return size;
-        }
+    if let Ok(project_cfg) = load_project_config(project_path)
+        && let Some(size) = project_cfg.pool_size
+    {
+        return size;
     }
 
     // Fall back to global config.
-    if let Some(projects) = &global_config.projects {
-        if let Some(project_cfg) = projects.get(project_name) {
-            if let Some(size) = project_cfg.pool_size {
-                return size;
-            }
-        }
+    if let Some(projects) = &global_config.projects
+        && let Some(project_cfg) = projects.get(project_name)
+        && let Some(size) = project_cfg.pool_size
+    {
+        return size;
     }
 
     0
@@ -130,19 +129,18 @@ pub fn effective_default_branch(
     project_path: &str,
 ) -> String {
     // Project-level .work/config.toml takes priority.
-    if let Ok(project_cfg) = load_project_config(project_path) {
-        if let Some(branch) = project_cfg.default_branch {
-            return branch;
-        }
+    if let Ok(project_cfg) = load_project_config(project_path)
+        && let Some(branch) = project_cfg.default_branch
+    {
+        return branch;
     }
 
     // Fall back to global per-project config.
-    if let Some(projects) = &global_config.projects {
-        if let Some(project_cfg) = projects.get(project_name) {
-            if let Some(branch) = &project_cfg.default_branch {
-                return branch.clone();
-            }
-        }
+    if let Some(projects) = &global_config.projects
+        && let Some(project_cfg) = projects.get(project_name)
+        && let Some(branch) = &project_cfg.default_branch
+    {
+        return branch.clone();
     }
 
     // Fall back to global default-branch.
