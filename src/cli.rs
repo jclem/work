@@ -79,6 +79,9 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+
+    /// Check the health of the work system.
+    Doctor,
 }
 
 #[derive(Debug, Subcommand)]
@@ -352,5 +355,11 @@ mod tests {
     fn delete_requires_name() {
         let result = Cli::try_parse_from(["work", "delete"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn doctor_parses() {
+        let cli = Cli::try_parse_from(["work", "doctor"]).unwrap();
+        assert!(matches!(cli.command, Command::Doctor));
     }
 }

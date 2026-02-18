@@ -56,7 +56,11 @@ pub fn worktree_path(project_name: &str, task_name: &str) -> PathBuf {
         .join(task_name)
 }
 
-fn data_dir_root() -> PathBuf {
+pub fn projects_dir() -> PathBuf {
+    data_dir_root().join("projects")
+}
+
+pub(crate) fn data_dir_root() -> PathBuf {
     if let Ok(path) = env::var("XDG_DATA_HOME")
         && !path.is_empty()
     {
