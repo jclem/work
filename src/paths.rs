@@ -33,6 +33,21 @@ pub fn socket_path(socket_override: Option<PathBuf>) -> PathBuf {
     runtime_dir().join(SOCKET_FILE)
 }
 
+pub fn state_dir() -> PathBuf {
+    if let Ok(path) = env::var("XDG_STATE_HOME")
+        && !path.is_empty()
+    {
+        return PathBuf::from(path).join(APP_DIR);
+    }
+
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".local/state").join(APP_DIR)
+}
+
+pub fn state_path() -> PathBuf {
+    state_dir().join("state.toml")
+}
+
 pub fn config_dir() -> PathBuf {
     if let Ok(path) = env::var("XDG_CONFIG_HOME")
         && !path.is_empty()
