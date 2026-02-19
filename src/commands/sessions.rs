@@ -28,7 +28,14 @@ pub fn execute(command: SessionCommand) -> Result<(), CliError> {
 fn start(args: SessionStartArgs) -> Result<(), CliError> {
     let issue = match args.issue {
         Some(text) => text,
-        None => read_stdin_issue()?,
+        None => {
+            let stdin = io::stdin();
+            if stdin.lock().is_terminal() {
+                read_editor_issue()?
+            } else {
+                read_stdin_issue()?
+            }
+        }
     };
 
     let cwd = std::env::current_dir()
@@ -314,21 +321,59 @@ fn open(args: SessionOpenArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Read the issue description from stdin.
-///
-/// Returns an error if stdin is a terminal (nothing piped/redirected) or if
-/// the resulting text is empty.
-fn read_stdin_issue() -> Result<String, CliError> {
-    let stdin = io::stdin();
-    if stdin.lock().is_terminal() {
+/// Open `$EDITOR` (or `$VISUAL`) with a temporary file and return whatever
+/// the user writes as the issue description.
+fn read_editor_issue() -> Result<String, CliError> {
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .map_err(|_| {
+            CliError::with_hint(
+                "no editor configured",
+                "set $EDITOR or $VISUAL in your shell environment",
+            )
+        })?;
+
+    let tmp_dir = std::env::temp_dir();
+    let tmp_path = tmp_dir.join("work-session-issue.md");
+
+    // Seed the file so the user starts with an empty slate.
+    std::fs::write(&tmp_path, "")
+        .map_err(|source| CliError::with_source("failed to create temporary issue file", source))?;
+
+    let status = std::process::Command::new(&editor)
+        .arg(&tmp_path)
+        .status()
+        .map_err(|source| {
+            CliError::with_source(format!("failed to launch editor: {editor}"), source)
+        })?;
+
+    if !status.success() {
+        return Err(CliError::new("editor exited with non-zero status"));
+    }
+
+    let contents = std::fs::read_to_string(&tmp_path)
+        .map_err(|source| CliError::with_source("failed to read issue from editor", source))?;
+
+    // Clean up the temp file (best effort).
+    let _ = std::fs::remove_file(&tmp_path);
+
+    let trimmed = contents.trim().to_string();
+    if trimmed.is_empty() {
         return Err(CliError::with_hint(
-            "no issue provided",
-            "pass the issue as an argument or pipe it via stdin",
+            "empty issue from editor",
+            "write an issue description in the editor and save the file",
         ));
     }
 
+    Ok(trimmed)
+}
+
+/// Read the issue description from stdin.
+///
+/// Returns an error if the resulting text is empty.
+fn read_stdin_issue() -> Result<String, CliError> {
     let mut buf = String::new();
-    stdin
+    io::stdin()
         .lock()
         .read_to_string(&mut buf)
         .map_err(|e| CliError::with_source("failed to read issue from stdin", e))?;
