@@ -1927,7 +1927,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
             (
                 "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                         t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                        s.createdAt, s.updatedAt, p.name \
+                        s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
                  FROM sessions s \
                  LEFT JOIN tasks t ON s.taskId = t.id \
                  JOIN projects p ON s.projectId = p.id \
@@ -1941,7 +1941,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
             (
                 "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                         t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                        s.createdAt, s.updatedAt, p.name \
+                        s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
                  FROM sessions s \
                  LEFT JOIN tasks t ON s.taskId = t.id \
                  JOIN projects p ON s.projectId = p.id \
@@ -1954,7 +1954,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
             (
                 "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                         t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                        s.createdAt, s.updatedAt, p.name \
+                        s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
                  FROM sessions s \
                  LEFT JOIN tasks t ON s.taskId = t.id \
                  JOIN projects p ON s.projectId = p.id \
