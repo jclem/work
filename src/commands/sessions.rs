@@ -3,7 +3,8 @@ use std::path::Path;
 
 use crate::cli::{
     SessionDeleteArgs, SessionListArgs, SessionLogsArgs, SessionOpenArgs, SessionPickArgs,
-    SessionRankArgs, SessionRejectArgs, SessionShowArgs, SessionStartArgs, SessionStopArgs,
+    SessionPrArgs, SessionRankArgs, SessionRejectArgs, SessionShowArgs, SessionStartArgs,
+    SessionStopArgs,
 };
 use crate::client;
 use crate::error::{self, CliError};
@@ -79,9 +80,10 @@ pub fn list(args: SessionListArgs) -> Result<(), CliError> {
                 Some(false) => "no",
                 None => "-",
             };
+            let pr = s.pull_request_url.as_deref().unwrap_or("-");
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                s.id, s.issue_ref, s.attempt_no, s.status, s.branch_name, mergeable
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                s.id, s.issue_ref, s.attempt_no, s.status, s.branch_name, mergeable, pr
             );
         }
         return Ok(());
@@ -104,7 +106,7 @@ pub fn list(args: SessionListArgs) -> Result<(), CliError> {
         .fold("BRANCH".len(), |max, s| max.max(s.branch_name.len()));
 
     println!(
-        "{:<id_width$}  {:<issue_width$}  ATT  {:<status_width$}  {:<branch_width$}  MERGE",
+        "{:<id_width$}  {:<issue_width$}  ATT  {:<status_width$}  {:<branch_width$}  MERGE  PR",
         "ID", "ISSUE", "STATUS", "BRANCH"
     );
 
@@ -114,10 +116,15 @@ pub fn list(args: SessionListArgs) -> Result<(), CliError> {
             Some(false) => "no",
             None => "-",
         };
+        let pr = if s.pull_request_url.is_some() {
+            "✓"
+        } else {
+            "-"
+        };
         let issue = truncate(&s.issue_ref, 40);
         println!(
-            "{:<id_width$}  {:<issue_width$}  {:<3}  {:<status_width$}  {:<branch_width$}  {}",
-            s.id, issue, s.attempt_no, s.status, s.branch_name, mergeable
+            "{:<id_width$}  {:<issue_width$}  {:<3}  {:<status_width$}  {:<branch_width$}  {:<5}  {}",
+            s.id, issue, s.attempt_no, s.status, s.branch_name, mergeable, pr
         );
     }
 
@@ -145,6 +152,9 @@ pub fn show(args: SessionShowArgs) -> Result<(), CliError> {
     }
     if let Some(ref path) = s.task_path {
         eprintln!("  Worktree:  {path}");
+    }
+    if let Some(ref pr_url) = s.pull_request_url {
+        eprintln!("  PR:        {pr_url}");
     }
 
     if let Some(ref report) = resp.report
@@ -302,6 +312,28 @@ pub fn open(args: SessionOpenArgs) -> Result<(), CliError> {
         .ok_or_else(|| CliError::new("session has no associated worktree"))?;
 
     shell_eval(&format!("cd \"{path}\""));
+    Ok(())
+}
+
+pub fn pr(args: SessionPrArgs) -> Result<(), CliError> {
+    let resp = client::show_session(args.id)?;
+    let url = resp.session.pull_request_url.ok_or_else(|| {
+        CliError::with_hint(
+            "session has no pull request",
+            "the agent may not have created a PR, or the session is still running",
+        )
+    })?;
+
+    let status = std::process::Command::new("open")
+        .arg(&url)
+        .status()
+        .map_err(|e| CliError::with_source("failed to open browser", e))?;
+
+    if !status.success() {
+        return Err(CliError::new("failed to open pull request URL in browser"));
+    }
+
+    error::print_success(&format!("Opened {url}"));
     Ok(())
 }
 

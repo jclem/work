@@ -539,6 +539,35 @@ impl App {
         });
     }
 
+    fn open_session_pr(&mut self) {
+        let Some(session) = self.selected_session() else {
+            return;
+        };
+
+        let id = session.id;
+        let pr_url = match &session.pull_request_url {
+            Some(url) => url.clone(),
+            None => {
+                self.set_status(format!("Session {id} has no PR"), StatusKind::Error);
+                return;
+            }
+        };
+
+        match std::process::Command::new("open")
+            .arg(&pr_url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => {
+                self.set_status(format!("Opened PR for session {id}"), StatusKind::Success);
+            }
+            Err(e) => {
+                self.set_status(format!("Failed to open PR: {e}"), StatusKind::Error);
+            }
+        }
+    }
+
     fn handle_daemon_action(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('s') => {
@@ -978,6 +1007,15 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Ctrl+P: open session PR in browser (Sessions tab only)
+    if key.code == KeyCode::Char('p')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && app.tab == Tab::Sessions
+    {
+        app.open_session_pr();
+        return;
+    }
+
     // Global keys
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
@@ -1187,6 +1225,12 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
 
             let issue = truncate_str(&s.issue_ref, 30);
 
+            let pr_indicator = if s.pull_request_url.is_some() {
+                Span::styled(" PR", Style::default().fg(Color::Cyan))
+            } else {
+                Span::styled("   ", Style::default().fg(Color::DarkGray))
+            };
+
             let mut spans = vec![
                 Span::styled(format!("{:>3}", s.id), Style::default().fg(Color::DarkGray)),
                 Span::raw(" "),
@@ -1195,6 +1239,7 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(status_color),
                 ),
                 mergeable,
+                pr_indicator,
                 Span::raw("  "),
                 Span::styled(issue, Style::default().fg(Color::White)),
             ];
@@ -1220,7 +1265,7 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
                 .title(" Sessions ")
                 .title_bottom(
                     Line::from(
-                        " s start │ ↵ details │ ^l logs │ p pick │ x stop │ r reject │ d delete ",
+                        " s start │ ↵ details │ ^l logs │ ^p PR │ p pick │ x stop │ r reject │ d delete ",
                     )
                     .right_aligned(),
                 ),
@@ -1308,6 +1353,13 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(vec![
                 Span::styled("Path:     ", Style::default().fg(Color::DarkGray)),
                 Span::styled(path.as_str(), Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+
+        if let Some(ref pr_url) = session.pull_request_url {
+            lines.push(Line::from(vec![
+                Span::styled("PR:       ", Style::default().fg(Color::DarkGray)),
+                Span::styled(pr_url.as_str(), Style::default().fg(Color::Cyan)),
             ]));
         }
 
@@ -1581,6 +1633,13 @@ fn render_session_detail(f: &mut Frame, detail: &SessionDetail, area: Rect) {
         ]));
     }
 
+    if let Some(ref pr_url) = s.pull_request_url {
+        lines.push(Line::from(vec![
+            Span::styled("  PR:        ", Style::default().fg(Color::DarkGray)),
+            Span::styled(pr_url.as_str(), Style::default().fg(Color::Cyan)),
+        ]));
+    }
+
     if let Some(ref report) = detail.response.report
         && !report.is_empty()
     {
@@ -1757,6 +1816,7 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             lines.push(help_line("s", "Start new session (enter issue)"));
             lines.push(help_line("Enter", "View session details & report"));
             lines.push(help_line("Ctrl+l", "View session output logs"));
+            lines.push(help_line("Ctrl+p", "Open PR in browser"));
             lines.push(help_line("p", "Pick session (accept, abandon siblings)"));
             lines.push(help_line("x", "Stop running session"));
             lines.push(help_line("r", "Reject session (with optional reason)"));
