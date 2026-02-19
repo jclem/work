@@ -145,7 +145,7 @@ pub enum TaskCommand {
 
 #[derive(Debug, Args)]
 pub struct SessionStartArgs {
-    /// Issue description (freeform text). Reads from stdin if omitted.
+    /// Issue description (freeform text). Opens $EDITOR when omitted, or reads from stdin if piped.
     #[arg(value_name = "ISSUE")]
     pub issue: Option<String>,
 
