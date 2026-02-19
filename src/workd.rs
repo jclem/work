@@ -2934,8 +2934,11 @@ fn pr_cleanup_sweep(logger: &Logger, deletion_notify: &Notify) -> Result<(), Cli
         .map_err(|e| CliError::with_source("failed to load sessions for PR cleanup", e))?;
 
     if rows.is_empty() {
+        logger.info("no sessions with PRs to check");
         return Ok(());
     }
+
+    logger.info(format!("checking {} session(s) with PRs", rows.len()));
 
     for (session_id, pr_url, task_id, project_path) in rows {
         let state = check_pr_state(&project_path, &pr_url);
