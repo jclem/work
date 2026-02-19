@@ -120,6 +120,7 @@ struct SessionLogs {
 struct App {
     tab: Tab,
     should_quit: bool,
+    refresh_interval: Duration,
     last_refresh: Instant,
 
     // Status bar message
@@ -168,10 +169,11 @@ impl Default for DaemonStatus {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(refresh_interval: Duration) -> Self {
         let mut app = Self {
             tab: Tab::Sessions,
             should_quit: false,
+            refresh_interval,
             last_refresh: Instant::now() - Duration::from_secs(999),
             status_message: None,
             projects: Vec::new(),
@@ -792,7 +794,7 @@ fn move_list_down(state: &mut ListState, len: usize) {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub fn run() -> Result<(), CliError> {
+pub fn run(interval_secs: u64) -> Result<(), CliError> {
     enable_raw_mode().map_err(|e| CliError::with_source("failed to enable raw mode", e))?;
 
     let mut stdout = io::stdout();
@@ -803,7 +805,7 @@ pub fn run() -> Result<(), CliError> {
     let mut terminal = ratatui::Terminal::new(backend)
         .map_err(|e| CliError::with_source("failed to create terminal", e))?;
 
-    let mut app = App::new();
+    let mut app = App::new(Duration::from_secs(interval_secs));
     let result = run_loop(&mut terminal, &mut app);
 
     disable_raw_mode().ok();
@@ -826,8 +828,8 @@ fn run_loop(
             return Ok(());
         }
 
-        // Auto-refresh every 5 seconds
-        if app.last_refresh.elapsed() > Duration::from_secs(5) {
+        // Auto-refresh at the configured interval
+        if app.last_refresh.elapsed() > app.refresh_interval {
             app.refresh_all();
         }
 

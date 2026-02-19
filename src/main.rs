@@ -99,7 +99,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Pool { command } => pool_command::execute(command)?,
         Command::Config { command } => config_command::execute(command)?,
         Command::Doctor => doctor_command::run()?,
-        Command::Tui => tui::run()?,
+        Command::Tui(args) => tui::run(args.interval)?,
     }
 
     Ok(())
