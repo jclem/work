@@ -81,9 +81,10 @@ pub fn list(args: SessionListArgs) -> Result<(), CliError> {
                 None => "-",
             };
             let pr = s.pull_request_url.as_deref().unwrap_or("-");
+            let pr_state = s.pull_request_state.as_deref().unwrap_or("-");
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                s.id, s.issue_ref, s.attempt_no, s.status, s.branch_name, mergeable, pr
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                s.id, s.issue_ref, s.attempt_no, s.status, s.branch_name, mergeable, pr, pr_state
             );
         }
         return Ok(());
@@ -116,10 +117,10 @@ pub fn list(args: SessionListArgs) -> Result<(), CliError> {
             Some(false) => "no",
             None => "-",
         };
-        let pr = if s.pull_request_url.is_some() {
-            "✓"
-        } else {
-            "-"
+        let pr = match (&s.pull_request_url, &s.pull_request_state) {
+            (Some(_), Some(state)) => state.clone(),
+            (Some(_), None) => "✓".to_string(),
+            _ => "-".to_string(),
         };
         let issue = truncate(&s.issue_ref, 40);
         println!(
@@ -154,7 +155,12 @@ pub fn show(args: SessionShowArgs) -> Result<(), CliError> {
         eprintln!("  Worktree:  {path}");
     }
     if let Some(ref pr_url) = s.pull_request_url {
-        eprintln!("  PR:        {pr_url}");
+        let state_suffix = s
+            .pull_request_state
+            .as_deref()
+            .map(|st| format!(" ({st})"))
+            .unwrap_or_default();
+        eprintln!("  PR:        {pr_url}{state_suffix}");
     }
 
     if let Some(ref report) = resp.report

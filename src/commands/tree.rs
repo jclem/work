@@ -127,10 +127,10 @@ pub fn run() -> Result<(), CliError> {
                     None => "",
                 };
 
-                let pr_str = if session.pull_request_url.is_some() {
-                    " PR"
-                } else {
-                    ""
+                let pr_str = match (&session.pull_request_url, &session.pull_request_state) {
+                    (Some(_), Some(state)) => format!(" PR:{state}"),
+                    (Some(_), None) => " PR".to_string(),
+                    _ => String::new(),
                 };
 
                 let _ = writeln!(
