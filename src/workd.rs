@@ -1527,14 +1527,19 @@ fn create_task_inner(
 
     let (project_id, project_name, project_path) =
         detect_project(&conn, req.project.as_deref(), &req.cwd)?;
-    let task_name = req
-        .name
-        .or_else(|| req.branch.clone())
-        .unwrap_or_else(generate_task_name);
-    let worktree_path = paths::worktree_path(&project_name, &task_name);
 
     let adapter = GitWorktreeAdapter;
     let global_cfg = config::load()?;
+
+    let task_name = req.name.or_else(|| req.branch.clone()).unwrap_or_else(|| {
+        let cmd = config::effective_task_name_command(&global_cfg, &project_name, &project_path);
+        generate_task_name(&TaskNameContext {
+            project_name: &project_name,
+            issue: None,
+            task_name_command: cmd.as_deref(),
+        })
+    });
+    let worktree_path = paths::worktree_path(&project_name, &task_name);
 
     if let Some(ref branch) = req.branch {
         adapter.create_from_branch(&project_path, branch, &worktree_path)?;
@@ -1765,6 +1770,8 @@ fn start_sessions_inner(
         .map_err(|e| CliError::with_source("failed to serialize agent command", e))?;
     let default_branch =
         config::effective_default_branch(&global_cfg, &project_name, &project_path);
+    let task_name_command =
+        config::effective_task_name_command(&global_cfg, &project_name, &project_path);
 
     if req.num_agents > max_per_issue {
         return Err(CliError::with_hint(
@@ -1807,7 +1814,11 @@ fn start_sessions_inner(
 
     for i in 1..=req.num_agents {
         let attempt_no = max_attempt + i as i64;
-        let task_name = generate_task_name();
+        let task_name = generate_task_name(&TaskNameContext {
+            project_name: &project_name,
+            issue: Some(&req.issue_ref),
+            task_name_command: task_name_command.as_deref(),
+        });
         let worktree_path = paths::worktree_path(&project_name, &task_name);
 
         let claimed = try_claim_pool(
@@ -3211,7 +3222,70 @@ const NOUNS: &[&str] = &[
     "whale", "wren", "ox", "finch", "crane",
 ];
 
-fn generate_task_name() -> String {
+/// Context passed to [`generate_task_name`] so that custom commands can use it.
+struct TaskNameContext<'a> {
+    project_name: &'a str,
+    issue: Option<&'a str>,
+    task_name_command: Option<&'a str>,
+}
+
+fn generate_task_name(ctx: &TaskNameContext<'_>) -> String {
+    if let Some(cmd) = ctx.task_name_command
+        && let Some(name) = try_custom_task_name(cmd, ctx.project_name, ctx.issue)
+    {
+        return name;
+    }
+
+    default_task_name()
+}
+
+/// Run a custom script to generate a task name.
+///
+/// The script body is written to a temporary file and executed directly, so it
+/// can use any interpreter via a shebang line (e.g. `#!/usr/bin/env fish`).
+/// Scripts without a shebang are executed by the OS default (`/bin/sh` on
+/// Unix). The environment variables `WORK_PROJECT` and (optionally)
+/// `WORK_ISSUE` are set before the script runs.
+///
+/// Returns `None` if the script fails or produces empty output, allowing the
+/// caller to fall back to the built-in generator.
+fn try_custom_task_name(script: &str, project_name: &str, issue: Option<&str>) -> Option<String> {
+    let tmp_dir = std::env::temp_dir().join("work-hooks");
+    std::fs::create_dir_all(&tmp_dir).ok()?;
+
+    let mut rng = rand::thread_rng();
+    let suffix: u64 = rng.r#gen();
+    let tmp_file = tmp_dir.join(format!("task-name-{}-{suffix:016x}", std::process::id()));
+    std::fs::write(&tmp_file, script).ok()?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp_file, std::fs::Permissions::from_mode(0o755)).ok()?;
+    }
+
+    let mut cmd = std::process::Command::new(&tmp_file);
+    cmd.env("WORK_PROJECT", project_name);
+    if let Some(issue_text) = issue {
+        cmd.env("WORK_ISSUE", issue_text);
+    }
+
+    let output = cmd.output().ok()?;
+    let _ = std::fs::remove_file(&tmp_file);
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(name)
+}
+
+fn default_task_name() -> String {
     let date = today_date_string();
     let mut rng = rand::thread_rng();
     let adj = ADJECTIVES[rng.gen_range(0..ADJECTIVES.len())];
@@ -3344,7 +3418,12 @@ mod tests {
 
     #[test]
     fn generate_task_name_has_date_prefix() {
-        let name = generate_task_name();
+        let ctx = TaskNameContext {
+            project_name: "test",
+            issue: None,
+            task_name_command: None,
+        };
+        let name = generate_task_name(&ctx);
         let expected_prefix = today_date_string();
         assert!(
             name.starts_with(&expected_prefix),
@@ -3354,10 +3433,80 @@ mod tests {
 
     #[test]
     fn generate_task_name_has_three_parts_after_date() {
-        let name = generate_task_name();
+        let ctx = TaskNameContext {
+            project_name: "test",
+            issue: None,
+            task_name_command: None,
+        };
+        let name = generate_task_name(&ctx);
         // Format: YYYY-MM-DD-adjective-noun (5 dash-separated parts)
         let parts: Vec<&str> = name.split('-').collect();
         assert_eq!(parts.len(), 5, "expected 5 parts in '{name}'");
+    }
+
+    #[test]
+    fn generate_task_name_uses_custom_script() {
+        let ctx = TaskNameContext {
+            project_name: "myproject",
+            issue: Some("fix the login bug"),
+            task_name_command: Some("#!/bin/sh\necho custom-branch-name"),
+        };
+        let name = generate_task_name(&ctx);
+        assert_eq!(name, "custom-branch-name");
+    }
+
+    #[test]
+    fn generate_task_name_falls_back_on_script_failure() {
+        let ctx = TaskNameContext {
+            project_name: "test",
+            issue: None,
+            task_name_command: Some("#!/bin/sh\nexit 1"),
+        };
+        let name = generate_task_name(&ctx);
+        // Should fall back to default format
+        let expected_prefix = today_date_string();
+        assert!(
+            name.starts_with(&expected_prefix),
+            "expected fallback name '{name}' to start with '{expected_prefix}'"
+        );
+    }
+
+    #[test]
+    fn generate_task_name_falls_back_on_empty_output() {
+        let ctx = TaskNameContext {
+            project_name: "test",
+            issue: None,
+            task_name_command: Some("#!/bin/sh\necho ''"),
+        };
+        let name = generate_task_name(&ctx);
+        // Should fall back to default format
+        let expected_prefix = today_date_string();
+        assert!(
+            name.starts_with(&expected_prefix),
+            "expected fallback name '{name}' to start with '{expected_prefix}'"
+        );
+    }
+
+    #[test]
+    fn generate_task_name_trims_whitespace() {
+        let ctx = TaskNameContext {
+            project_name: "test",
+            issue: None,
+            task_name_command: Some("#!/bin/sh\necho '  my-branch  '"),
+        };
+        let name = generate_task_name(&ctx);
+        assert_eq!(name, "my-branch");
+    }
+
+    #[test]
+    fn generate_task_name_custom_script_receives_env_vars() {
+        let ctx = TaskNameContext {
+            project_name: "demo-proj",
+            issue: Some("test issue"),
+            task_name_command: Some("#!/bin/sh\necho \"${WORK_PROJECT}-${WORK_ISSUE}\""),
+        };
+        let name = generate_task_name(&ctx);
+        assert_eq!(name, "demo-proj-test issue");
     }
 
     #[test]
