@@ -19,6 +19,7 @@ $ work new "fix the off-by-one error in the pagination logic"
 - **Interactive TUI** -- monitor all sessions, view logs, and manage projects from a dashboard
 - **Pre-warmed pool** -- large repos stay fast because worktrees are created in the background
 - **Post-creation hooks** -- run setup scripts (`npm install`, etc.) automatically after creating a worktree
+- **Custom branch naming** -- use any script (including LLMs) to generate worktree/branch names
 - **Resource-aware** -- pool pre-warming backs off when CPU or memory is under pressure
 
 ## Install
@@ -326,6 +327,12 @@ new-after = """
 #!/bin/bash
 npm install
 """
+
+# Custom branch name generator (uses any interpreter via shebang)
+# task-name-command = """
+# #!/bin/sh
+# echo "$WORK_ISSUE" | llm -s 'Output a short kebab-case branch name.'
+# """
 
 # Daemon resource thresholds
 [daemon]

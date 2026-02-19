@@ -13,9 +13,11 @@ defaults.
   - [Editing the config](#editing-the-config)
 - [General settings](#general-settings)
   - [default-branch](#default-branch)
+  - [task-name-command](#task-name-command)
 - [Per-project settings](#per-project-settings)
   - [pool-size](#pool-size)
   - [default-branch (per-project)](#default-branch-per-project)
+  - [task-name-command (per-project)](#task-name-command-per-project)
   - [hooks](#hooks)
 - [Daemon settings](#daemon-settings)
   - [pool-max-load](#pool-max-load)
@@ -126,6 +128,58 @@ The branch that new worktrees (and pool worktrees) are created from.
 default-branch = "main"
 ```
 
+### `task-name-command`
+
+A script body used to generate task and worktree names. The value is written to
+a temporary file and executed directly, so you can use any interpreter via a
+shebang line (e.g. `#!/usr/bin/env fish`). Scripts without a shebang are
+executed by the OS default (`/bin/sh` on Unix).
+
+The script's trimmed stdout is used as the task/branch name. If the script
+fails or produces empty output, the built-in `YYYY-MM-DD-adjective-noun`
+generator is used as a fallback.
+
+Two environment variables are set before the script runs:
+
+| Variable | Value |
+|---|---|
+| `WORK_PROJECT` | The project name |
+| `WORK_ISSUE` | The issue description (only set for sessions started with `work new`) |
+
+| | |
+|---|---|
+| **Key** | `task-name-command` |
+| **Type** | string (script body) |
+| **Default** | none (built-in adjective-noun generator) |
+| **Scope** | global, per-project |
+
+```toml
+# ~/.config/work/config.toml
+task-name-command = """
+#!/bin/sh
+date +%Y-%m-%d-$(openssl rand -hex 4)
+"""
+```
+
+Example using an LLM to generate names from the issue text:
+
+```toml
+task-name-command = """
+#!/bin/sh
+echo "$WORK_ISSUE" | llm -s 'Output a short kebab-case branch name. No explanation.'
+"""
+```
+
+Example using fish:
+
+```toml
+task-name-command = """
+#!/usr/bin/env fish
+set date (date +%Y-%m-%d)
+echo "$date-"(random choice cool neat wild)"-"(random choice cat fox owl)
+"""
+```
+
 ---
 
 ## Per-project settings
@@ -173,6 +227,29 @@ Or in `.work/config.toml`:
 
 ```toml
 default-branch = "develop"
+```
+
+### `task-name-command` (per-project)
+
+Override the task name generation script for a specific project. Takes
+precedence over the global `task-name-command`. See
+[`task-name-command`](#task-name-command) for full details.
+
+```toml
+[projects.my-project]
+task-name-command = """
+#!/bin/sh
+echo "my-project-$(date +%Y%m%d)-$(openssl rand -hex 3)"
+"""
+```
+
+Or in `.work/config.toml`:
+
+```toml
+task-name-command = """
+#!/bin/sh
+echo "$(date +%Y-%m-%d)-custom"
+"""
 ```
 
 ### Hooks
@@ -496,6 +573,8 @@ work tui --interval 2
 | `NO_COLOR` | Disable colored output when set (any value) | unset |
 | `EDITOR` | Editor opened by `work config edit` | -- |
 | `HOME` | Home directory fallback when XDG vars are not set | -- |
+| `WORK_PROJECT` | Set by `task-name-command` scripts: the project name | -- |
+| `WORK_ISSUE` | Set by `task-name-command` scripts: the issue description (sessions only) | -- |
 
 ---
 
@@ -542,6 +621,12 @@ A complete global config file showing all available settings:
 
 # Global default branch for new worktrees
 default-branch = "main"
+
+# Custom task/branch name generator (optional)
+# task-name-command = """
+# #!/bin/sh
+# echo "$WORK_ISSUE" | llm -s 'Output a short kebab-case branch name. No explanation.'
+# """
 
 # ─── Per-project settings ───────────────────────────────────────────
 
@@ -602,6 +687,12 @@ And a matching per-project config:
 
 default-branch = "develop"
 pool-size = 2
+
+# Custom branch naming for this project (optional)
+# task-name-command = """
+# #!/bin/sh
+# date +%Y-%m-%d-$(openssl rand -hex 4)
+# """
 
 [hooks]
 new-after = """
