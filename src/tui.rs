@@ -986,8 +986,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
-        KeyCode::Tab => app.next_tab(),
-        KeyCode::BackTab => app.prev_tab(),
+        KeyCode::Tab | KeyCode::Char(']') => app.next_tab(),
+        KeyCode::BackTab | KeyCode::Char('[') => app.prev_tab(),
         KeyCode::Char('1') => app.tab = Tab::Sessions,
         KeyCode::Char('2') => app.tab = Tab::Projects,
         KeyCode::Char('3') => app.tab = Tab::Tasks,
@@ -1076,7 +1076,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         (message.as_str(), Style::default().fg(color))
     } else {
         (
-            "? help │ q quit │ Tab/S-Tab switch │ ↑↓/jk navigate │ F5 refresh",
+            "? help │ q quit │ Tab/[]/S-Tab switch │ ↑↓/jk navigate │ F5 refresh",
             Style::default().fg(Color::DarkGray),
         )
     };
@@ -1714,8 +1714,8 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
         help_line("q / Esc", "Quit"),
-        help_line("Tab", "Next tab"),
-        help_line("Shift+Tab", "Previous tab"),
+        help_line("Tab / ]", "Next tab"),
+        help_line("Shift+Tab / [", "Previous tab"),
         help_line("1-4", "Jump to tab"),
         help_line("↑ / k", "Move up"),
         help_line("↓ / j", "Move down"),
