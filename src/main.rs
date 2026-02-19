@@ -83,15 +83,21 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Projects { command } => {
             projects_command::execute(command)?;
         }
-        Command::New(args) => tasks_command::create(args)?,
-        Command::List(args) => tasks_command::list(args)?,
+        Command::Start(args) => sessions_command::start(args)?,
+        Command::List(args) => sessions_command::list(args)?,
+        Command::Show(args) => sessions_command::show(args)?,
+        Command::Rank(args) => sessions_command::rank(args)?,
+        Command::Pick(args) => sessions_command::pick(args)?,
+        Command::Reject(args) => sessions_command::reject(args)?,
+        Command::Stop(args) => sessions_command::stop(args)?,
+        Command::Delete(args) => sessions_command::delete(args)?,
+        Command::Open(args) => sessions_command::open(args)?,
+        Command::Logs(args) => sessions_command::logs(args)?,
+        Command::Task { command } => tasks_command::execute(command)?,
         Command::Tree(_) => tree_command::run()?,
-        Command::Cd(args) => tasks_command::cd(args)?,
-        Command::Delete(args) => tasks_command::delete(args)?,
         Command::Nuke(args) => tasks_command::nuke(args)?,
         Command::Pool { command } => pool_command::execute(command)?,
         Command::Config { command } => config_command::execute(command)?,
-        Command::Session { command } => sessions_command::execute(command)?,
         Command::Doctor => doctor_command::run()?,
         Command::Tui => tui::run()?,
     }

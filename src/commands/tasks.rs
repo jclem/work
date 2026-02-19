@@ -1,10 +1,19 @@
 use std::io::IsTerminal;
 
-use crate::cli::{self, CdArgs, DeleteArgs, ListArgs, NewArgs};
+use crate::cli::{self, TaskCdArgs, TaskCommand, TaskDeleteArgs, TaskListArgs, TaskNewArgs};
 use crate::client;
 use crate::error::{self, CliError};
 
-pub fn create(args: NewArgs) -> Result<(), CliError> {
+pub fn execute(command: TaskCommand) -> Result<(), CliError> {
+    match command {
+        TaskCommand::New(args) => create(args),
+        TaskCommand::List(args) => list(args),
+        TaskCommand::Cd(args) => cd(args),
+        TaskCommand::Delete(args) => delete(args),
+    }
+}
+
+pub fn create(args: TaskNewArgs) -> Result<(), CliError> {
     let cwd = std::env::current_dir()
         .map_err(|e| CliError::with_source("failed to read current directory", e))?;
     let cwd = cwd
@@ -51,7 +60,7 @@ pub fn create(args: NewArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn cd(args: CdArgs) -> Result<(), CliError> {
+pub fn cd(args: TaskCdArgs) -> Result<(), CliError> {
     let cwd = std::env::current_dir()
         .map_err(|e| CliError::with_source("failed to read current directory", e))?
         .canonicalize()
@@ -63,7 +72,10 @@ pub fn cd(args: CdArgs) -> Result<(), CliError> {
             let tasks = client::list_tasks(args.project.as_deref(), Some(&cwd_str), false)?;
 
             let task = tasks.iter().find(|t| t.name == name).ok_or_else(|| {
-                CliError::with_hint("task not found", "Run `work list` to see available tasks.")
+                CliError::with_hint(
+                    "task not found",
+                    "Run `work task list` to see available tasks.",
+                )
             })?;
 
             shell_eval(&format!("cd \"{}\"", task.path));
@@ -77,7 +89,7 @@ pub fn cd(args: CdArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn list(args: ListArgs) -> Result<(), CliError> {
+pub fn list(args: TaskListArgs) -> Result<(), CliError> {
     let cwd = std::env::current_dir()
         .map_err(|e| CliError::with_source("failed to read current directory", e))?
         .canonicalize()
@@ -143,7 +155,7 @@ pub fn list(args: ListArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn delete(args: DeleteArgs) -> Result<(), CliError> {
+pub fn delete(args: TaskDeleteArgs) -> Result<(), CliError> {
     let cwd = std::env::current_dir()
         .map_err(|e| CliError::with_source("failed to read current directory", e))?
         .canonicalize()
