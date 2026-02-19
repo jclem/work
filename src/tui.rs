@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -114,6 +115,20 @@ struct SessionLogs {
 }
 
 // ---------------------------------------------------------------------------
+// Project tree rows
+// ---------------------------------------------------------------------------
+
+/// A row in the flat project-tree list. Projects are parent nodes; sessions are
+/// children that appear only when the parent project is expanded.
+#[derive(Debug, Clone)]
+enum ProjectTreeRow {
+    /// A project header row; stores index into `App::projects`.
+    Project(usize),
+    /// A session child row; stores index into `App::sessions`.
+    Session(usize),
+}
+
+// ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
 
@@ -131,6 +146,10 @@ struct App {
     tasks: Vec<TaskInfo>,
     sessions: Vec<SessionInfo>,
     daemon_status: DaemonStatus,
+
+    // Project tree expand/collapse state
+    expanded_projects: HashSet<String>,
+    project_tree_rows: Vec<ProjectTreeRow>,
 
     // List states
     project_list_state: ListState,
@@ -180,6 +199,8 @@ impl App {
             tasks: Vec::new(),
             sessions: Vec::new(),
             daemon_status: DaemonStatus::default(),
+            expanded_projects: HashSet::new(),
+            project_tree_rows: Vec::new(),
             project_list_state: ListState::default(),
             task_list_state: ListState::default(),
             session_list_state: ListState::default(),
@@ -210,7 +231,7 @@ impl App {
             Ok(projects) => self.projects = projects,
             Err(_) => self.projects.clear(),
         }
-        self.clamp_selection_projects();
+        self.rebuild_project_tree();
     }
 
     fn refresh_tasks(&mut self) {
@@ -234,6 +255,7 @@ impl App {
             Err(_) => self.sessions.clear(),
         }
         self.clamp_selection_sessions();
+        self.rebuild_project_tree();
     }
 
     fn refresh_daemon(&mut self) {
@@ -276,15 +298,15 @@ impl App {
     }
 
     fn clamp_selection_projects(&mut self) {
-        if self.projects.is_empty() {
+        let len = self.project_tree_rows.len();
+        if len == 0 {
             self.project_list_state.select(None);
         } else if self.project_list_state.selected().is_none() {
             self.project_list_state.select(Some(0));
         } else if let Some(i) = self.project_list_state.selected()
-            && i >= self.projects.len()
+            && i >= len
         {
-            self.project_list_state
-                .select(Some(self.projects.len() - 1));
+            self.project_list_state.select(Some(len - 1));
         }
     }
 
@@ -313,10 +335,39 @@ impl App {
         }
     }
 
-    fn selected_project(&self) -> Option<&ProjectInfo> {
+    /// Rebuild the flat project-tree row list from current projects, sessions,
+    /// and expand/collapse state.
+    fn rebuild_project_tree(&mut self) {
+        let mut rows = Vec::new();
+        for (pi, project) in self.projects.iter().enumerate() {
+            rows.push(ProjectTreeRow::Project(pi));
+            if self.expanded_projects.contains(&project.name) {
+                for (si, session) in self.sessions.iter().enumerate() {
+                    if session.project_name.as_deref() == Some(project.name.as_str()) {
+                        rows.push(ProjectTreeRow::Session(si));
+                    }
+                }
+            }
+        }
+        self.project_tree_rows = rows;
+        self.clamp_selection_projects();
+    }
+
+    fn selected_project_tree_row(&self) -> Option<&ProjectTreeRow> {
         self.project_list_state
             .selected()
-            .and_then(|i| self.projects.get(i))
+            .and_then(|i| self.project_tree_rows.get(i))
+    }
+
+    fn selected_project(&self) -> Option<&ProjectInfo> {
+        match self.selected_project_tree_row()? {
+            ProjectTreeRow::Project(pi) => self.projects.get(*pi),
+            ProjectTreeRow::Session(si) => {
+                let session = self.sessions.get(*si)?;
+                let project_name = session.project_name.as_deref()?;
+                self.projects.iter().find(|p| p.name == project_name)
+            }
+        }
     }
 
     fn selected_task(&self) -> Option<&TaskInfo> {
@@ -353,7 +404,9 @@ impl App {
 
     fn move_up(&mut self) {
         match self.tab {
-            Tab::Projects => move_list_up(&mut self.project_list_state, self.projects.len()),
+            Tab::Projects => {
+                move_list_up(&mut self.project_list_state, self.project_tree_rows.len())
+            }
             Tab::Tasks => move_list_up(&mut self.task_list_state, self.tasks.len()),
             Tab::Sessions => move_list_up(&mut self.session_list_state, self.sessions.len()),
             Tab::Daemon => {}
@@ -362,7 +415,9 @@ impl App {
 
     fn move_down(&mut self) {
         match self.tab {
-            Tab::Projects => move_list_down(&mut self.project_list_state, self.projects.len()),
+            Tab::Projects => {
+                move_list_down(&mut self.project_list_state, self.project_tree_rows.len())
+            }
             Tab::Tasks => move_list_down(&mut self.task_list_state, self.tasks.len()),
             Tab::Sessions => move_list_down(&mut self.session_list_state, self.sessions.len()),
             Tab::Daemon => {}
@@ -384,6 +439,12 @@ impl App {
 
     fn handle_projects_action(&mut self, code: KeyCode) {
         match code {
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.project_tree_expand();
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.project_tree_collapse();
+            }
             KeyCode::Char('n') | KeyCode::Char('c') => {
                 self.input = Some(InputPrompt {
                     label: "Project path (leave empty for cwd):".to_string(),
@@ -401,6 +462,57 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Expand the currently selected project, or move into its first child.
+    fn project_tree_expand(&mut self) {
+        let Some(row) = self.selected_project_tree_row().cloned() else {
+            return;
+        };
+        match row {
+            ProjectTreeRow::Project(pi) => {
+                let name = self.projects[pi].name.clone();
+                if self.expanded_projects.contains(&name) {
+                    // Already expanded — move cursor to the first child session.
+                    let current = self.project_list_state.selected().unwrap_or(0);
+                    if let Some(ProjectTreeRow::Session(_)) =
+                        self.project_tree_rows.get(current + 1)
+                    {
+                        self.project_list_state.select(Some(current + 1));
+                    }
+                } else {
+                    self.expanded_projects.insert(name);
+                    self.rebuild_project_tree();
+                }
+            }
+            ProjectTreeRow::Session(_) => {}
+        }
+    }
+
+    /// Collapse the currently selected project, or jump to the parent project.
+    fn project_tree_collapse(&mut self) {
+        let Some(row) = self.selected_project_tree_row().cloned() else {
+            return;
+        };
+        let current = self.project_list_state.selected().unwrap_or(0);
+        match row {
+            ProjectTreeRow::Project(pi) => {
+                let name = self.projects[pi].name.clone();
+                if self.expanded_projects.contains(&name) {
+                    self.expanded_projects.remove(&name);
+                    self.rebuild_project_tree();
+                }
+            }
+            ProjectTreeRow::Session(_) => {
+                // Jump to the parent project row.
+                for i in (0..current).rev() {
+                    if let ProjectTreeRow::Project(_) = &self.project_tree_rows[i] {
+                        self.project_list_state.select(Some(i));
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -1140,15 +1252,65 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_projects(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app
-        .projects
+        .project_tree_rows
         .iter()
-        .map(|p| {
-            let line = Line::from(vec![
-                Span::styled(&p.name, Style::default().fg(Color::Cyan).bold()),
-                Span::raw("  "),
-                Span::styled(&p.path, Style::default().fg(Color::DarkGray)),
-            ]);
-            ListItem::new(line)
+        .map(|row| match row {
+            ProjectTreeRow::Project(pi) => {
+                let p = &app.projects[*pi];
+                let expanded = app.expanded_projects.contains(&p.name);
+                let session_count = app
+                    .sessions
+                    .iter()
+                    .filter(|s| s.project_name.as_deref() == Some(p.name.as_str()))
+                    .count();
+                let arrow = if session_count > 0 {
+                    if expanded { "▼ " } else { "▶ " }
+                } else {
+                    "  "
+                };
+                let count_span = if session_count > 0 {
+                    Span::styled(
+                        format!("  ({session_count})"),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    Span::raw("")
+                };
+                let line = Line::from(vec![
+                    Span::styled(arrow, Style::default().fg(Color::DarkGray)),
+                    Span::styled(&p.name, Style::default().fg(Color::Cyan).bold()),
+                    count_span,
+                    Span::raw("  "),
+                    Span::styled(&p.path, Style::default().fg(Color::DarkGray)),
+                ]);
+                ListItem::new(line)
+            }
+            ProjectTreeRow::Session(si) => {
+                let s = &app.sessions[*si];
+                let status_color = match s.status.as_str() {
+                    "running" => Color::Yellow,
+                    "reported" => Color::Green,
+                    "picked" => Color::Cyan,
+                    "rejected" => Color::Red,
+                    "stopped" => Color::DarkGray,
+                    "planned" => Color::Blue,
+                    "failed" => Color::Red,
+                    _ => Color::White,
+                };
+                let issue = truncate_str(&s.issue_ref, 40);
+                let line = Line::from(vec![
+                    Span::styled("    ", Style::default()),
+                    Span::styled(format!("#{}", s.id), Style::default().fg(Color::DarkGray)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{:<8}", s.status),
+                        Style::default().fg(status_color),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(issue, Style::default().fg(Color::White)),
+                ]);
+                ListItem::new(line)
+            }
         })
         .collect();
 
@@ -1158,7 +1320,9 @@ fn render_projects(f: &mut Frame, app: &mut App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title(" Projects ")
-                .title_bottom(Line::from(" n new │ d delete ").right_aligned()),
+                .title_bottom(
+                    Line::from(" ←/h collapse │ →/l expand │ n new │ d delete ").right_aligned(),
+                ),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
         .highlight_symbol("▸ ");
@@ -1802,6 +1966,8 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             )));
+            lines.push(help_line("→ / l", "Expand project (show sessions)"));
+            lines.push(help_line("← / h", "Collapse project (hide sessions)"));
             lines.push(help_line("n / c", "Create project (register cwd or path)"));
             lines.push(help_line("d / Del", "Delete selected project"));
         }
