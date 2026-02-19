@@ -598,6 +598,24 @@ fn process_deletion(logger: &Logger, task: DeletionTask) {
         Path::new(&task.path),
         task.force,
     ) {
+        if !task.force && is_unforced_delete_blocked(&e) {
+            match restore_task_after_unforced_delete_failure(task.id) {
+                Ok(()) => {
+                    logger.info(format!(
+                        "kept task {} active after non-force delete failed due to local changes; retry with --force to discard changes",
+                        task.name
+                    ));
+                }
+                Err(db_err) => {
+                    logger.error(format!(
+                        "failed to restore {} to active after delete failure: {db_err}",
+                        task.name
+                    ));
+                }
+            }
+            return;
+        }
+
         logger.error(format!("failed to remove worktree for {}: {e}", task.name));
         return;
     }
@@ -614,6 +632,24 @@ fn process_deletion(logger: &Logger, task: DeletionTask) {
             ));
         }
     }
+}
+
+fn is_unforced_delete_blocked(error: &CliError) -> bool {
+    error
+        .to_string()
+        .contains("contains modified or untracked files")
+}
+
+fn restore_task_after_unforced_delete_failure(task_id: i64) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+    let now = unix_timestamp_seconds()?;
+    conn.execute(
+        "UPDATE tasks SET status = 'active', deleteForce = 0, updatedAt = ?1 WHERE id = ?2 AND status = 'deleting'",
+        params![now, task_id],
+    )
+    .map_err(|e| CliError::with_source("failed to restore task after delete failure", e))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3342,5 +3378,19 @@ mod tests {
     fn resolve_project_name_uses_path_basename() {
         let name = resolve_project_name("/tmp/demo", None).unwrap();
         assert_eq!(name, "demo");
+    }
+
+    #[test]
+    fn is_unforced_delete_blocked_matches_modified_or_untracked_files() {
+        let err = CliError::new(
+            "git worktree remove failed: fatal: '/tmp/wt' contains modified or untracked files, use --force to delete it",
+        );
+        assert!(is_unforced_delete_blocked(&err));
+    }
+
+    #[test]
+    fn is_unforced_delete_blocked_ignores_other_errors() {
+        let err = CliError::new("git worktree remove failed: fatal: not a git repository");
+        assert!(!is_unforced_delete_blocked(&err));
     }
 }

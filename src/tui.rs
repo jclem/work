@@ -80,7 +80,10 @@ struct Confirm {
 #[derive(Debug, Clone)]
 enum ConfirmAction {
     DeleteProject(String),
-    DeleteTask(String),
+    DeleteTask {
+        name: String,
+        project: Option<String>,
+    },
     Nuke,
     ClearPool,
     StopSession(i64),
@@ -546,9 +549,14 @@ impl App {
             KeyCode::Char('d') | KeyCode::Delete => {
                 if let Some(task) = self.selected_task() {
                     let name = task.name.clone();
+                    let project = task.project_name.clone();
+                    let display_name = project
+                        .as_deref()
+                        .map(|p| format!("{p}/{name}"))
+                        .unwrap_or_else(|| name.clone());
                     self.confirm = Some(Confirm {
-                        message: format!("Delete task '{name}'?"),
-                        on_confirm: ConfirmAction::DeleteTask(name),
+                        message: format!("Force-delete task '{display_name}'?"),
+                        on_confirm: ConfirmAction::DeleteTask { name, project },
                     });
                 }
             }
@@ -820,14 +828,21 @@ impl App {
                 }
                 Err(e) => self.set_status(format!("Error: {e}"), StatusKind::Error),
             },
-            ConfirmAction::DeleteTask(name) => {
+            ConfirmAction::DeleteTask { name, project } => {
                 let cwd = std::env::current_dir()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
-                match client::delete_task(&name, None, &cwd, false) {
+                match client::delete_task(&name, project.as_deref(), &cwd, true) {
                     Ok(()) => {
-                        self.set_status(format!("Task '{name}' deleted"), StatusKind::Success);
+                        let display_name = project
+                            .as_deref()
+                            .map(|p| format!("{p}/{name}"))
+                            .unwrap_or_else(|| name.clone());
+                        self.set_status(
+                            format!("Task '{display_name}' force-deleted"),
+                            StatusKind::Success,
+                        );
                         self.refresh_tasks();
                     }
                     Err(e) => self.set_status(format!("Error: {e}"), StatusKind::Error),
