@@ -1,22 +1,24 @@
 # work
 
-Isolated git worktrees for every task. No more stashing, no more branch juggling.
+Delegate coding tasks to AI agents, each in its own isolated git worktree. No
+stashing, no branch juggling, no waiting.
 
-`work` manages git worktrees so each task gets its own directory and branch. A
-background daemon pre-warms worktrees in large repos so `work new` is instant.
+`work` manages git worktrees and AI agent sessions so you can describe what you
+want, let agents solve it in parallel, and pick the best result.
 
 ```
-$ work new
-Created task 2026-02-17-bold-fox
-~/worktrees/my-project/2026-02-17-bold-fox $
+$ work new "fix the off-by-one error in the pagination logic"
+✓ Started session 42 (attempt 1) on branch 2026-02-19-bold-lark
 ```
 
 ## Highlights
 
-- **Instant task creation** -- pre-warmed worktree pool means no waiting for `git worktree add` in large repos
-- **Auto-generated names** -- tasks get memorable `YYYY-MM-DD-adjective-noun` names (or bring your own)
-- **Background cleanup** -- the daemon deletes worktrees and branches asynchronously
-- **Post-creation hooks** -- run setup scripts (`npm install`, etc.) automatically after creating a task
+- **Session-based workflow** -- describe an issue, spawn parallel agent sessions, pick the best PR
+- **Isolated worktrees** -- every session and task gets its own directory and branch
+- **Parallel agents** -- start multiple attempts on the same issue with `--agents N`
+- **Interactive TUI** -- monitor all sessions, view logs, pick winners, and manage projects from a dashboard
+- **Pre-warmed pool** -- large repos stay fast because worktrees are created in the background
+- **Post-creation hooks** -- run setup scripts (`npm install`, etc.) automatically after creating a worktree
 - **Resource-aware** -- pool pre-warming backs off when CPU or memory is under pressure
 
 ## Install
@@ -39,16 +41,121 @@ cargo install --path .
 # Initialize your shell (add to your shell config)
 eval "$(work init zsh)"   # or bash, fish
 
-# Start the daemon (or use `work daemon install` on macOS for auto-start)
-work daemon start
+# Start the daemon
+work daemon start --detach
+
+# On macOS, install as a Launch Agent for auto-start:
+work daemon install
 
 # Register a project
 cd ~/src/my-project
 work projects create
 
-# Create your first task
-work new
+# Start your first session
+work new "add input validation to the signup form"
 ```
+
+## Recommended workflow
+
+The fastest way to use `work` day-to-day:
+
+### 1. Keep the TUI open
+
+Bind `work tui` to a hotkey in your terminal or window manager so you always
+have a dashboard one keypress away. The TUI auto-refreshes and shows every
+session across all projects.
+
+```bash
+work tui          # launch the TUI dashboard
+work ui           # alias
+```
+
+### 2. Start sessions with `work new`
+
+Describe what you want done. The agent handles branching, coding, and opening a
+draft PR.
+
+```bash
+work new "fix the login redirect after password reset"
+```
+
+For hard problems, run multiple agents in parallel and let them race:
+
+```bash
+work new "refactor the query builder to support joins" --agents 3
+```
+
+If you omit the issue text, `work new` opens your `$EDITOR` so you can write a
+longer description. You can also pipe from stdin:
+
+```bash
+gh issue view 42 --json body -q .body | work new
+```
+
+### 3. Monitor progress in the TUI
+
+Switch to the TUI to watch sessions as they work. Key actions:
+
+| Key | Action |
+|-----|--------|
+| `Enter` | View session details and report |
+| `Ctrl+L` | View live session logs |
+| `Ctrl+P` | Open the session's PR in a browser |
+| `p` | Pick (accept) a session |
+| `r` | Reject a session |
+| `x` | Stop a running session |
+| `s` | Start a new session |
+
+### 4. Pick the best result
+
+Once agents finish, review their PRs and reports, then pick the winner:
+
+```bash
+work pick 42       # accept session 42, auto-reject its siblings
+```
+
+Or from the TUI, press `p` on the session you like. Sibling sessions (other
+attempts on the same issue) are automatically rejected.
+
+### 5. Clean up
+
+```bash
+work delete 43     # remove a rejected session and its worktree
+```
+
+## Concepts
+
+### Projects
+
+A **project** is a registered git repository. Register one with
+`work projects create` from inside the repo (or pass a path). All worktrees and
+sessions for that project are tracked together.
+
+### Tasks
+
+A **task** is a plain git worktree for manual development -- no agent attached.
+Create one with `work task new` when you want to work on something yourself.
+Each task gets an auto-generated name like `2026-02-19-bold-lark` (or you can
+choose your own) and a dedicated branch.
+
+### Sessions
+
+A **session** is an AI agent attempt at solving an issue. Sessions are the core
+unit of `work`. Each session:
+
+- Gets its own worktree and branch
+- Runs an agent that writes code and opens a draft PR
+- Produces a report summarizing what was done
+- Has a status: `planned` → `running` → `reported` → `picked` or `rejected`
+
+Multiple sessions can target the same issue (parallel attempts). Use
+`work rank` to score them or review them in the TUI.
+
+### Issues
+
+An **issue** is freeform text describing what you want done. It can be a
+sentence, a paragraph, or a GitHub issue body piped from `gh`. Issues are
+stored with their sessions, not as standalone entities.
 
 ## Shell setup
 
@@ -78,23 +185,58 @@ eval "$(work completions zsh)"    # or bash, fish
 
 ## Usage
 
-### Tasks
+### Sessions
 
 ```bash
-work new                          # Create a task (auto-named)
-work new fix-login                # Create a named task
-work new --project my-project     # Create in a specific project
-work new --no-cd                  # Create without cd-ing into it
+# Start sessions
+work new "fix the bug"            # Start a session (aliases: start, create)
+work new                          # Opens $EDITOR for the issue description
+work new --agents 3               # Start 3 parallel sessions
+work new --project my-project     # Target a specific project
 
-work list                         # List tasks in the current project
-work list --all                   # List tasks across all projects
+# List and inspect
+work list                         # List sessions in the current project
+work list --all                   # List sessions across all projects
 work list --json                  # JSON output
 work ls                           # Alias for list
+work show 42                      # Show session details and report
+work rank --issue "fix the bug"   # Rank sessions by heuristic score
+work tree                         # Show a tree of all projects, tasks, and sessions
 
-work delete fix-login             # Delete a task (async, via daemon)
-work rm fix-login --force         # Force delete with uncommitted changes
+# Monitor
+work logs 42                      # View session output
+work logs 42 --follow             # Tail output in real time (like tail -f)
 
-work nuke                         # Remove ALL tasks, projects, and pool entries
+# Act on results
+work pick 42                      # Accept session, auto-reject siblings
+work reject 42                    # Reject a session
+work reject 42 --reason "..."     # Reject with feedback
+work stop 42                      # Stop a running session
+work pr 42                        # Open the session's PR in a browser
+work open 42                      # cd into the session's worktree
+
+# Clean up
+work delete 42                    # Delete session and its worktree
+```
+
+### Tasks
+
+Tasks are worktrees for manual work, not agent sessions.
+
+```bash
+work task new                     # Create a task (auto-named)
+work task new fix-login           # Create a named task
+work task new -b existing-branch  # Use an existing branch
+work task new --no-cd             # Create without cd-ing into it
+
+work task list                    # List tasks in the current project
+work task list --all              # List tasks across all projects
+
+work task delete fix-login        # Delete a task
+work task rm fix-login --force    # Force delete with uncommitted changes
+
+work cd my-task                   # cd to a task's worktree
+work cd                           # cd to the project root
 ```
 
 ### Projects
@@ -107,21 +249,79 @@ work projects list                # List all registered projects
 work projects ls --json           # JSON output
 
 work projects delete my-project   # Delete project and its worktrees
-work projects rm my-project      # Alias for delete
 ```
+
+### TUI dashboard
+
+```bash
+work tui                          # Launch the TUI (alias: work ui)
+work tui --interval 10            # Custom refresh interval (seconds)
+```
+
+The TUI has three tabs:
+
+**Sessions** -- View and manage all agent sessions.
+
+| Key | Action |
+|-----|--------|
+| `s` | Start a new session |
+| `Enter` | View session details |
+| `Ctrl+L` | View session logs |
+| `Ctrl+P` | Open PR in browser |
+| `p` | Pick (accept) session |
+| `r` | Reject session |
+| `x` | Stop session |
+| `d` | Delete session |
+| `` ` `` | Toggle tree/flat view |
+| `e` | Toggle empty projects |
+
+**Tasks** -- View and manage worktrees.
+
+| Key | Action |
+|-----|--------|
+| `n` / `c` | Create new task |
+| `d` / `Delete` | Delete task |
+| `N` | Nuke all tasks |
+| `P` | Clear pool worktrees |
+
+**Daemon** -- View daemon status and control it.
+
+| Key | Action |
+|-----|--------|
+| `s` | Start daemon |
+| `x` | Stop daemon |
+| `R` | Restart daemon |
+
+**Global keys:**
+
+| Key | Action |
+|-----|--------|
+| `?` | Toggle help overlay |
+| `Tab` / `]` / `[` | Switch tabs |
+| `1` / `2` / `3` | Jump to tab |
+| `↑` `↓` / `k` `j` | Navigate |
+| `F5` | Refresh |
+| `q` / `Esc` | Quit |
 
 ### Daemon
 
 ```bash
-work daemon start                 # Start (daemonizes by default)
-work daemon start --attach        # Run in the foreground
+work daemon start                 # Start (foreground by default)
+work daemon start --detach        # Run in the background
 work daemon start --force         # Replace an already-running daemon
 work daemon stop                  # Stop
 work daemon restart               # Restart
 work daemon pid                   # Print PID
-work daemon socket-path           # Print socket path (for scripting)
+work daemon socket-path           # Print socket path
 work daemon install               # Install as a Launch Agent (macOS)
-work daemon uninstall             # Uninstall the Launch Agent (macOS)
+work daemon uninstall             # Uninstall the Launch Agent
+```
+
+### Diagnostics
+
+```bash
+work doctor                       # Check system health (database, daemon, projects, sessions)
+work tree                         # Show a tree of all projects, tasks, and sessions
 ```
 
 ## Configuration
@@ -176,19 +376,34 @@ work config edit
 
 ## How it works
 
+### Session lifecycle
+
+When you run `work new "fix the bug"`:
+
+1. The issue text is captured (from the argument, `$EDITOR`, or stdin)
+2. A session record is created in the database with status `planned`
+3. The daemon picks up the session, creates a worktree and branch, and spawns an agent
+4. The agent works in the worktree: reads code, makes changes, opens a draft PR
+5. When the agent finishes, the session moves to `reported` with a summary
+6. You review the result and `pick` or `reject` the session
+
+Session statuses:
+
+| Status | Meaning |
+|--------|---------|
+| `planned` | Created, waiting to start |
+| `running` | Agent is actively working |
+| `reported` | Agent finished with a report |
+| `picked` | You accepted this session |
+| `rejected` | You rejected this session |
+| `stopped` | You stopped the agent |
+| `failed` | The agent encountered an error |
+
 ### Worktrees
 
-When you run `work new`, the CLI:
-
-1. Detects the project from your current directory (or `--project` flag)
-2. Generates a task name like `2026-02-17-bold-fox`
-3. Claims a pre-warmed worktree from the pool (if available), or falls back to `git worktree add`
-4. Creates a branch named after the task
-5. Runs post-creation hooks
-6. Changes your shell directory to the new worktree
-
 Worktrees live at `$XDG_DATA_HOME/work/<project>/worktrees/<task>/`
-(default: `~/.local/share/work/...`).
+(default: `~/.local/share/work/...`). Each session and task gets a worktree
+with its own branch, completely isolated from your main checkout.
 
 ### Pre-warm pool
 
@@ -198,7 +413,7 @@ opt-in: set `pool-size` in your config to enable it.
 
 The daemon fills the pool:
 - On startup
-- After `work new` claims a pool entry
+- After a session or task claims a pool entry
 - Every `pool-poll-interval` seconds (default: 5 min)
 
 Pool worktrees use temporary `__pool-*` branch names. When claimed, the branch
@@ -208,11 +423,12 @@ See [docs/POOL.md](docs/POOL.md) for full details.
 
 ### Daemon
 
-The daemon is an HTTP server over a Unix domain socket. It runs two background
-workers:
+The daemon is an HTTP server over a Unix domain socket. It runs background
+workers for:
 
-- **Deletion worker** -- processes `work delete` requests asynchronously (up to 4 in parallel)
-- **Pool worker** -- maintains pre-warmed worktrees, respecting CPU and memory thresholds
+- **Session management** -- spawning and monitoring agent processes
+- **Deletion** -- processing `work delete` requests asynchronously
+- **Pool maintenance** -- keeping pre-warmed worktrees filled, respecting CPU and memory thresholds
 
 Socket location:
 - `$XDG_RUNTIME_DIR/work/workd.sock` (when `XDG_RUNTIME_DIR` is set)
@@ -247,4 +463,14 @@ cargo build                       # Build
 cargo test                        # Run tests
 cargo fmt --check                 # Check formatting
 cargo clippy --all-targets --all-features -- -D warnings  # Lint
+```
+
+Or with [mise](https://mise.jdx.dev):
+
+```bash
+mise run check                    # Run all checks (fmt + clippy)
+mise run test                     # Run tests
+mise run dev                      # Start the daemon in dev mode
+mise run fix                      # Auto-fix formatting and lint issues
+mise run release:local            # Build release binary and install to /usr/local/bin
 ```
