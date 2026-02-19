@@ -113,7 +113,7 @@ pub enum Command {
 
     /// Launch the interactive TUI dashboard.
     #[command(alias = "ui")]
-    Tui,
+    Tui(TuiArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -402,6 +402,13 @@ pub struct TaskCdArgs {
     /// Project the task belongs to.
     #[arg(long, value_name = "NAME")]
     pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct TuiArgs {
+    /// Auto-refresh interval in seconds (default: 5, or set in config).
+    #[arg(long)]
+    pub interval: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -733,5 +740,31 @@ mod tests {
         } else {
             panic!("expected Command::Logs");
         }
+    }
+
+    #[test]
+    fn tui_parses_without_interval() {
+        let cli = Cli::try_parse_from(["work", "tui"]).unwrap();
+        if let Command::Tui(args) = cli.command {
+            assert!(args.interval.is_none());
+        } else {
+            panic!("expected Command::Tui");
+        }
+    }
+
+    #[test]
+    fn tui_parses_custom_interval() {
+        let cli = Cli::try_parse_from(["work", "tui", "--interval", "10"]).unwrap();
+        if let Command::Tui(args) = cli.command {
+            assert_eq!(args.interval, Some(10));
+        } else {
+            panic!("expected Command::Tui");
+        }
+    }
+
+    #[test]
+    fn tui_alias_ui_parses() {
+        let cli = Cli::try_parse_from(["work", "ui"]).unwrap();
+        assert!(matches!(cli.command, Command::Tui(_)));
     }
 }

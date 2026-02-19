@@ -11,6 +11,7 @@ pub struct Config {
     pub projects: Option<HashMap<String, ProjectConfig>>,
     pub daemon: Option<DaemonConfig>,
     pub orchestrator: Option<OrchestratorConfig>,
+    pub tui: Option<TuiConfig>,
     #[serde(rename = "default-branch")]
     pub default_branch: Option<String>,
 }
@@ -78,6 +79,13 @@ pub struct OrchestratorConfig {
     pub max_agents_in_flight: Option<u32>,
     #[serde(rename = "max-sessions-per-issue")]
     pub max_sessions_per_issue: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TuiConfig {
+    /// Auto-refresh interval in seconds (default 5).
+    #[serde(rename = "refresh-interval")]
+    pub refresh_interval: Option<u64>,
 }
 
 pub const DEFAULT_AGENT_COMMAND: &[&str] = &[
@@ -388,5 +396,19 @@ echo "local"
         let config: Config = toml::from_str(toml_str).unwrap();
         let daemon = config.daemon.unwrap();
         assert_eq!(daemon.pool_pull_interval, 3600);
+    }
+
+    #[test]
+    fn tui_refresh_interval_parses() {
+        let toml_str = "[tui]\nrefresh-interval = 10\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let tui = config.tui.unwrap();
+        assert_eq!(tui.refresh_interval, Some(10));
+    }
+
+    #[test]
+    fn tui_section_omitted_defaults_to_none() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.tui.is_none());
     }
 }
