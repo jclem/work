@@ -8,6 +8,7 @@ mod db;
 mod error;
 mod logger;
 mod paths;
+mod state;
 mod tui;
 mod workd;
 
