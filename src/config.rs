@@ -14,6 +14,14 @@ pub struct Config {
     pub tui: Option<TuiConfig>,
     #[serde(rename = "default-branch")]
     pub default_branch: Option<String>,
+    /// Script body to generate task/worktree names. Written to a temp file and
+    /// executed directly, so it can use any interpreter via a shebang line
+    /// (e.g. `#!/usr/bin/env fish`). Its trimmed stdout is used as the task
+    /// name. If the script fails, the built-in adjective-noun generator is used
+    /// as a fallback. The environment variables `WORK_PROJECT` and `WORK_ISSUE`
+    /// (if available) are set before the script runs.
+    #[serde(rename = "task-name-command")]
+    pub task_name_command: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -24,6 +32,10 @@ pub struct ProjectConfig {
     pub pool_size: Option<u32>,
     #[serde(rename = "default-branch")]
     pub default_branch: Option<String>,
+    /// Project-level override for task name generation. See
+    /// [`Config::task_name_command`] for details.
+    #[serde(rename = "task-name-command")]
+    pub task_name_command: Option<String>,
 }
 
 fn default_max_load() -> f64 {
@@ -276,6 +288,33 @@ pub fn effective_max_sessions_per_issue(global_config: &Config) -> u32 {
         .unwrap_or(5)
 }
 
+/// Returns the effective task-name-command for a project. Checks project-level
+/// `.work/config.toml` first, then global per-project config, then the global
+/// `task-name-command`. Returns `None` when no custom command is configured.
+pub fn effective_task_name_command(
+    global_config: &Config,
+    project_name: &str,
+    project_path: &str,
+) -> Option<String> {
+    // Project-level .work/config.toml takes priority.
+    if let Ok(project_cfg) = load_project_config(project_path)
+        && let Some(cmd) = project_cfg.task_name_command
+    {
+        return Some(cmd);
+    }
+
+    // Fall back to global per-project config.
+    if let Some(projects) = &global_config.projects
+        && let Some(project_cfg) = projects.get(project_name)
+        && let Some(cmd) = &project_cfg.task_name_command
+    {
+        return Some(cmd.clone());
+    }
+
+    // Fall back to global task-name-command.
+    global_config.task_name_command.clone()
+}
+
 pub fn hook_script<'a>(config: &'a Config, project_name: &str, hook_name: &str) -> Option<&'a str> {
     let projects = config.projects.as_ref()?;
     let project = projects.get(project_name)?;
@@ -460,5 +499,42 @@ echo "local"
     fn tui_section_omitted_defaults_to_none() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.tui.is_none());
+    }
+
+    #[test]
+    fn task_name_command_parses_global() {
+        let toml_str = "task-name-command = \"llm-name-gen\"\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.task_name_command.as_deref(), Some("llm-name-gen"));
+    }
+
+    #[test]
+    fn task_name_command_defaults_to_none() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.task_name_command.is_none());
+    }
+
+    #[test]
+    fn task_name_command_parses_project_level() {
+        let toml_str = "task-name-command = \"my-namer --style haiku\"\n";
+        let config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.task_name_command.as_deref(),
+            Some("my-namer --style haiku")
+        );
+    }
+
+    #[test]
+    fn task_name_command_per_project_in_global() {
+        let toml_str = r#"
+[projects.my-project]
+task-name-command = "echo my-custom-name"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let project = config.projects.as_ref().unwrap().get("my-project").unwrap();
+        assert_eq!(
+            project.task_name_command.as_deref(),
+            Some("echo my-custom-name")
+        );
     }
 }
