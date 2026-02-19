@@ -27,14 +27,14 @@ use crate::workd::{ProjectInfo, SessionInfo, ShowSessionResponse, TaskInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    Sessions,
     Projects,
     Tasks,
-    Sessions,
     Daemon,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Projects, Tab::Tasks, Tab::Sessions, Tab::Daemon];
+    const ALL: [Tab; 4] = [Tab::Sessions, Tab::Projects, Tab::Tasks, Tab::Daemon];
 
     fn title(self) -> &'static str {
         match self {
@@ -170,7 +170,7 @@ impl Default for DaemonStatus {
 impl App {
     fn new() -> Self {
         let mut app = Self {
-            tab: Tab::Projects,
+            tab: Tab::Sessions,
             should_quit: false,
             last_refresh: Instant::now() - Duration::from_secs(999),
             status_message: None,
@@ -221,7 +221,14 @@ impl App {
 
     fn refresh_sessions(&mut self) {
         match client::list_sessions(None, None, None) {
-            Ok(sessions) => self.sessions = sessions,
+            Ok(mut sessions) => {
+                sessions.sort_by(|a, b| {
+                    let pa = a.project_name.as_deref().unwrap_or("");
+                    let pb = b.project_name.as_deref().unwrap_or("");
+                    pa.cmp(pb).then(a.attempt_no.cmp(&b.attempt_no))
+                });
+                self.sessions = sessions;
+            }
             Err(_) => self.sessions.clear(),
         }
         self.clamp_selection_sessions();
@@ -981,9 +988,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => app.next_tab(),
         KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => app.prev_tab(),
-        KeyCode::Char('1') => app.tab = Tab::Projects,
-        KeyCode::Char('2') => app.tab = Tab::Tasks,
-        KeyCode::Char('3') => app.tab = Tab::Sessions,
+        KeyCode::Char('1') => app.tab = Tab::Sessions,
+        KeyCode::Char('2') => app.tab = Tab::Projects,
+        KeyCode::Char('3') => app.tab = Tab::Tasks,
         KeyCode::Char('4') => app.tab = Tab::Daemon,
         KeyCode::Up | KeyCode::Char('k') => app.move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
