@@ -1400,10 +1400,19 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
 
             let issue = truncate_str(&s.issue_ref, 30);
 
-            let pr_indicator = if s.pull_request_url.is_some() {
-                Span::styled(" PR", Style::default().fg(Color::Cyan))
-            } else {
-                Span::styled("   ", Style::default().fg(Color::DarkGray))
+            let pr_indicator = match (&s.pull_request_url, &s.pull_request_state) {
+                (Some(_), Some(state)) => {
+                    let color = match state.as_str() {
+                        "merged" => Color::Magenta,
+                        "closed" => Color::Red,
+                        "draft" => Color::Yellow,
+                        _ => Color::Cyan,
+                    };
+                    let label = format!(" PR:{state}");
+                    Span::styled(label, Style::default().fg(color))
+                }
+                (Some(_), None) => Span::styled(" PR", Style::default().fg(Color::Cyan)),
+                _ => Span::styled("   ", Style::default().fg(Color::DarkGray)),
             };
 
             let mut spans = vec![
@@ -1532,10 +1541,23 @@ fn render_sessions(f: &mut Frame, app: &mut App, area: Rect) {
         }
 
         if let Some(ref pr_url) = session.pull_request_url {
-            lines.push(Line::from(vec![
+            let state_color = match session.pull_request_state.as_deref() {
+                Some("merged") => Color::Magenta,
+                Some("closed") => Color::Red,
+                Some("draft") => Color::Yellow,
+                _ => Color::Cyan,
+            };
+            let mut pr_spans = vec![
                 Span::styled("PR:       ", Style::default().fg(Color::DarkGray)),
                 Span::styled(pr_url.as_str(), Style::default().fg(Color::Cyan)),
-            ]));
+            ];
+            if let Some(ref state) = session.pull_request_state {
+                pr_spans.push(Span::styled(
+                    format!(" ({state})"),
+                    Style::default().fg(state_color),
+                ));
+            }
+            lines.push(Line::from(pr_spans));
         }
 
         if let (Some(lines_changed), Some(files_changed)) =

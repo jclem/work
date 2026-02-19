@@ -203,6 +203,7 @@ pub struct SessionInfo {
     pub files_changed: Option<u32>,
     pub summary_excerpt: Option<String>,
     pub pull_request_url: Option<String>,
+    pub pull_request_state: Option<String>,
     pub project_name: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -1859,6 +1860,7 @@ fn start_sessions_inner(
             files_changed: None,
             summary_excerpt: None,
             pull_request_url: None,
+            pull_request_state: None,
             project_name: Some(project_name.clone()),
             created_at: now,
             updated_at: now,
@@ -1879,7 +1881,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
                 (
                     "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                             t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                            s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
+                            s.createdAt, s.updatedAt, p.name, s.pullRequestUrl, s.pullRequestState \
                      FROM sessions s \
                      LEFT JOIN tasks t ON s.taskId = t.id \
                      JOIN projects p ON s.projectId = p.id \
@@ -1896,7 +1898,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
                 (
                     "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                             t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                            s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
+                            s.createdAt, s.updatedAt, p.name, s.pullRequestUrl, s.pullRequestState \
                      FROM sessions s \
                      LEFT JOIN tasks t ON s.taskId = t.id \
                      JOIN projects p ON s.projectId = p.id \
@@ -1912,7 +1914,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
                 (
                     "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                             t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                            s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
+                            s.createdAt, s.updatedAt, p.name, s.pullRequestUrl, s.pullRequestState \
                      FROM sessions s \
                      LEFT JOIN tasks t ON s.taskId = t.id \
                      JOIN projects p ON s.projectId = p.id \
@@ -1927,7 +1929,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
             (
                 "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                         t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                        s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
+                        s.createdAt, s.updatedAt, p.name, s.pullRequestUrl, s.pullRequestState \
                  FROM sessions s \
                  LEFT JOIN tasks t ON s.taskId = t.id \
                  JOIN projects p ON s.projectId = p.id \
@@ -1941,7 +1943,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
             (
                 "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                         t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                        s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
+                        s.createdAt, s.updatedAt, p.name, s.pullRequestUrl, s.pullRequestState \
                  FROM sessions s \
                  LEFT JOIN tasks t ON s.taskId = t.id \
                  JOIN projects p ON s.projectId = p.id \
@@ -1954,7 +1956,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
             (
                 "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                         t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                        s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
+                        s.createdAt, s.updatedAt, p.name, s.pullRequestUrl, s.pullRequestState \
                  FROM sessions s \
                  LEFT JOIN tasks t ON s.taskId = t.id \
                  JOIN projects p ON s.projectId = p.id \
@@ -1990,6 +1992,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
                 files_changed: None,
                 summary_excerpt: None,
                 pull_request_url: row.get(13)?,
+                pull_request_state: row.get(14)?,
                 project_name: Some(row.get(12)?),
                 created_at: row.get(10)?,
                 updated_at: row.get(11)?,
@@ -2064,7 +2067,7 @@ fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, Cl
         .query_row(
             "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                     t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                    s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
+                    s.createdAt, s.updatedAt, p.name, s.pullRequestUrl, s.pullRequestState \
              FROM sessions s \
              LEFT JOIN tasks t ON s.taskId = t.id \
              JOIN projects p ON s.projectId = p.id \
@@ -2087,6 +2090,7 @@ fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, Cl
                     row.get::<_, i64>(11)?,
                     row.get::<_, String>(12)?,
                     row.get::<_, Option<String>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
                 ))
             },
         )
@@ -2113,6 +2117,7 @@ fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, Cl
         updated_at,
         project_name,
         pull_request_url,
+        pull_request_state,
     ) = row;
 
     let (has_report, summary_excerpt, lines_changed, files_changed) =
@@ -2143,6 +2148,7 @@ fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, Cl
             files_changed,
             summary_excerpt,
             pull_request_url,
+            pull_request_state,
             project_name: Some(project_name),
             created_at,
             updated_at,
@@ -2809,15 +2815,19 @@ fn collect_session_results(
         .map_err(|e| CliError::with_source("failed to store session summary", e))?;
     }
 
-    // Detect PR URL via `gh pr list --head <branch>`.
-    let pr_url = detect_pull_request_url(&session.project_path, &session.branch_name);
-    if let Some(ref url) = pr_url {
+    // Detect PR URL and state via `gh` CLI (uses its stored auth token).
+    let pr_info = detect_pull_request(&session.project_path, &session.branch_name);
+    let pr_url = pr_info.as_ref().map(|(url, _)| url.clone());
+    if let Some((ref url, ref state)) = pr_info {
         conn.execute(
-            "UPDATE sessions SET pullRequestUrl = ?1 WHERE id = ?2",
-            params![url, session.id],
+            "UPDATE sessions SET pullRequestUrl = ?1, pullRequestState = ?2 WHERE id = ?3",
+            params![url, state, session.id],
         )
-        .map_err(|e| CliError::with_source("failed to store pull request URL", e))?;
-        logger.info(format!("session {} PR detected: {url}", session.id));
+        .map_err(|e| CliError::with_source("failed to store pull request info", e))?;
+        logger.info(format!(
+            "session {} PR detected: {url} ({state})",
+            session.id
+        ));
     }
 
     logger.info(format!(
@@ -2914,8 +2924,16 @@ fn pr_cleanup_sweep(logger: &Logger, deletion_notify: &Notify) -> Result<(), Cli
     for (session_id, pr_url, task_id, project_path) in rows {
         let state = check_pr_state(&project_path, &pr_url);
 
+        // Always persist the latest PR state so views stay current.
+        if let Some(ref st) = state {
+            let _ = conn.execute(
+                "UPDATE sessions SET pullRequestState = ?1 WHERE id = ?2",
+                params![st, session_id],
+            );
+        }
+
         match state.as_deref() {
-            Some("MERGED") | Some("CLOSED") => {
+            Some("merged") | Some("closed") => {
                 logger.info(format!(
                     "session {session_id} PR is {}, cleaning up",
                     state.as_deref().unwrap_or("unknown")
@@ -2958,7 +2976,7 @@ fn pr_cleanup_sweep(logger: &Logger, deletion_notify: &Notify) -> Result<(), Cli
                 }
             }
             _ => {
-                // PR is still open or we couldn't check — skip.
+                // PR is still open/draft or we couldn't check — skip cleanup.
             }
         }
     }
@@ -2966,34 +2984,20 @@ fn pr_cleanup_sweep(logger: &Logger, deletion_notify: &Notify) -> Result<(), Cli
     Ok(())
 }
 
-/// Check the state of a PR (OPEN, MERGED, CLOSED) using `gh pr view`.
+/// Check the state of a PR using the `gh` CLI auth token and the GitHub API.
+///
+/// Returns a normalised state string: `"open"`, `"draft"`, `"merged"`, or
+/// `"closed"`.
 fn check_pr_state(project_path: &str, pr_url: &str) -> Option<String> {
-    let output = std::process::Command::new("gh")
-        .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
-        .current_dir(project_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if state.is_empty() { None } else { Some(state) }
-}
-
-/// Detect a pull request URL for a branch using `gh pr list`.
-fn detect_pull_request_url(project_path: &str, branch_name: &str) -> Option<String> {
     let output = std::process::Command::new("gh")
         .args([
             "pr",
-            "list",
-            "--head",
-            branch_name,
+            "view",
+            pr_url,
             "--json",
-            "url",
+            "state,isDraft",
             "--jq",
-            ".[0].url",
+            r#"(.state | ascii_downcase) + "\t" + (.isDraft | tostring)"#,
         ])
         .current_dir(project_path)
         .output()
@@ -3003,8 +3007,65 @@ fn detect_pull_request_url(project_path: &str, branch_name: &str) -> Option<Stri
         return None;
     }
 
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if url.is_empty() { None } else { Some(url) }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = raw.splitn(2, '\t').collect();
+    let state = parts.first().copied().unwrap_or("");
+    let is_draft = parts.get(1).copied().unwrap_or("false") == "true";
+
+    match state {
+        "open" if is_draft => Some("draft".to_string()),
+        _ => Some(state.to_string()),
+    }
+}
+
+/// Detect a pull request for a branch using the `gh` CLI (which authenticates
+/// with its stored token). Returns `(url, state)` where state is one of
+/// `"open"`, `"draft"`, `"merged"`, or `"closed"`.
+fn detect_pull_request(project_path: &str, branch_name: &str) -> Option<(String, String)> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--head",
+            branch_name,
+            "--json",
+            "url,state,isDraft",
+            "--jq",
+            r#".[0] | .url + "\t" + (.state | ascii_downcase) + "\t" + (.isDraft | tostring)"#,
+        ])
+        .current_dir(project_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = raw.splitn(3, '\t').collect();
+    let url = parts.first().copied().unwrap_or("").to_string();
+    let state = parts.get(1).copied().unwrap_or("open");
+    let is_draft = parts.get(2).copied().unwrap_or("false") == "true";
+
+    if url.is_empty() {
+        return None;
+    }
+
+    let state = if state == "open" && is_draft {
+        "draft".to_string()
+    } else {
+        state.to_string()
+    };
+
+    Some((url, state))
 }
 
 // ---------------------------------------------------------------------------
