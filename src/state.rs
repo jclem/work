@@ -2,10 +2,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionsView {
+    #[default]
+    Tree,
+    Flat,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(rename = "show-empty-projects", default)]
     pub show_empty_projects: bool,
+
+    #[serde(rename = "sessions-view", default)]
+    pub sessions_view: SessionsView,
 }
 
 pub fn load() -> UiState {
