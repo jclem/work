@@ -174,6 +174,10 @@ Open the config in your editor:
 work config edit
 ```
 
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full configuration
+reference, including all daemon, orchestrator, TUI, and environment variable
+settings.
+
 ## How it works
 
 ### Worktrees
