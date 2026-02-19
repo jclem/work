@@ -61,15 +61,6 @@ pub enum Command {
     /// Show session details and report.
     Show(SessionShowArgs),
 
-    /// Rank sessions by heuristic score.
-    Rank(SessionRankArgs),
-
-    /// Accept a session, abandon siblings.
-    Pick(SessionPickArgs),
-
-    /// Reject a session.
-    Reject(SessionRejectArgs),
-
     /// Stop a running session.
     Stop(SessionStopArgs),
 
@@ -188,35 +179,6 @@ pub struct SessionShowArgs {
     /// Session ID.
     #[arg(value_name = "ID")]
     pub id: i64,
-}
-
-#[derive(Debug, Args)]
-pub struct SessionRankArgs {
-    /// Issue to rank sessions for.
-    #[arg(long)]
-    pub issue: String,
-
-    /// Project to filter sessions for.
-    #[arg(long, value_name = "NAME")]
-    pub project: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct SessionPickArgs {
-    /// Session ID to accept.
-    #[arg(value_name = "ID")]
-    pub id: i64,
-}
-
-#[derive(Debug, Args)]
-pub struct SessionRejectArgs {
-    /// Session ID to reject.
-    #[arg(value_name = "ID")]
-    pub id: i64,
-
-    /// Reason for rejection.
-    #[arg(long)]
-    pub reason: Option<String>,
 }
 
 #[derive(Debug, Args)]

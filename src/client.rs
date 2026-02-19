@@ -9,9 +9,9 @@ use crate::paths;
 use crate::workd::{
     ClearPoolResponse, CreateProjectRequest, CreateProjectResponse, CreateTaskRequest,
     CreateTaskResponse, DeleteProjectRequest, DeleteSessionRequest, DeleteTaskRequest,
-    DetectProjectRequest, ListSessionsRequest, ListTasksRequest, NukeResponse, PickSessionRequest,
-    ProjectInfo, RejectSessionRequest, SessionInfo, ShowSessionRequest, ShowSessionResponse,
-    StartSessionsRequest, StartSessionsResponse, StopSessionRequest, TaskInfo,
+    DetectProjectRequest, ListSessionsRequest, ListTasksRequest, NukeResponse, ProjectInfo,
+    SessionInfo, ShowSessionRequest, ShowSessionResponse, StartSessionsRequest,
+    StartSessionsResponse, StopSessionRequest, TaskInfo,
 };
 
 fn daemon_error() -> CliError {
@@ -234,22 +234,6 @@ pub fn list_sessions(
 
 pub fn show_session(id: i64) -> Result<ShowSessionResponse, CliError> {
     post_json("/sessions/show", &ShowSessionRequest { id })
-}
-
-pub fn pick_session(id: i64) -> Result<(), CliError> {
-    let _: serde_json::Value = post_json("/sessions/pick", &PickSessionRequest { id })?;
-    Ok(())
-}
-
-pub fn reject_session(id: i64, reason: Option<&str>) -> Result<(), CliError> {
-    let _: serde_json::Value = post_json(
-        "/sessions/reject",
-        &RejectSessionRequest {
-            id,
-            reason: reason.map(|s| s.to_string()),
-        },
-    )?;
-    Ok(())
 }
 
 pub fn stop_session(id: i64) -> Result<(), CliError> {

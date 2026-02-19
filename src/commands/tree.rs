@@ -117,7 +117,7 @@ pub fn run() -> Result<(), CliError> {
 
                 let status_style = match session.status.as_str() {
                     "running" => green,
-                    "stopped" | "rejected" => yellow,
+                    "stopped" => yellow,
                     _ => dimmed,
                 };
 

@@ -65,7 +65,6 @@ enum InputAction {
     CreateProject,
     CreateTask,
     StartSession,
-    RejectSession,
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +85,6 @@ enum ConfirmAction {
     ClearPool,
     StopSession(i64),
     DeleteSession(i64),
-    PickSession(i64),
 }
 
 // ---------------------------------------------------------------------------
@@ -654,31 +652,12 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('p') => {
-                if let Some(session) = self.active_session() {
-                    let id = session.id;
-                    self.confirm = Some(Confirm {
-                        message: format!("Pick session {id} (abandon siblings)?"),
-                        on_confirm: ConfirmAction::PickSession(id),
-                    });
-                }
-            }
             KeyCode::Char('x') => {
                 if let Some(session) = self.active_session() {
                     let id = session.id;
                     self.confirm = Some(Confirm {
                         message: format!("Stop session {id}?"),
                         on_confirm: ConfirmAction::StopSession(id),
-                    });
-                }
-            }
-            KeyCode::Char('r') => {
-                if let Some(session) = self.active_session() {
-                    let id = session.id;
-                    self.input = Some(InputPrompt {
-                        label: format!("Reason for rejecting session {id} (optional):"),
-                        value: String::new(),
-                        on_confirm: InputAction::RejectSession,
                     });
                 }
             }
@@ -890,13 +869,6 @@ impl App {
                 }
                 Err(e) => self.set_status(format!("Error: {e}"), StatusKind::Error),
             },
-            ConfirmAction::PickSession(id) => match client::pick_session(id) {
-                Ok(()) => {
-                    self.set_status(format!("Session {id} picked"), StatusKind::Success);
-                    self.refresh_sessions();
-                }
-                Err(e) => self.set_status(format!("Error: {e}"), StatusKind::Error),
-            },
         }
     }
 
@@ -967,24 +939,6 @@ impl App {
                         self.refresh_sessions();
                     }
                     Err(e) => self.set_status(format!("Error: {e}"), StatusKind::Error),
-                }
-            }
-            InputAction::RejectSession => {
-                // The ID was stored from the selected session when the input was opened
-                if let Some(session) = self.active_session() {
-                    let id = session.id;
-                    let reason = if value.is_empty() {
-                        None
-                    } else {
-                        Some(value.as_str())
-                    };
-                    match client::reject_session(id, reason) {
-                        Ok(()) => {
-                            self.set_status(format!("Session {id} rejected"), StatusKind::Success);
-                            self.refresh_sessions();
-                        }
-                        Err(e) => self.set_status(format!("Error: {e}"), StatusKind::Error),
-                    }
                 }
             }
         }
@@ -1551,10 +1505,8 @@ fn render_sessions_flat(f: &mut Frame, app: &mut App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .title(" Sessions (flat) ")
                 .title_bottom(
-                    Line::from(
-                        " ` tree │ s start │ ↵ detail │ ^l logs │ ^p PR │ p pick │ x stop │ r reject │ d del ",
-                    )
-                    .right_aligned(),
+                    Line::from(" ` tree │ s start │ ↵ detail │ ^l logs │ ^p PR │ x stop │ d del ")
+                        .right_aligned(),
                 ),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
@@ -1708,8 +1660,6 @@ fn session_status_color(status: &str) -> Color {
     match status {
         "running" => Color::Yellow,
         "reported" => Color::Green,
-        "picked" => Color::Cyan,
-        "rejected" => Color::Red,
         "stopped" => Color::DarkGray,
         "planned" => Color::Blue,
         "failed" => Color::Red,
@@ -2104,9 +2054,7 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             lines.push(help_line("Enter", "View session details & report"));
             lines.push(help_line("Ctrl+l", "View session output logs"));
             lines.push(help_line("Ctrl+p", "Open PR in browser"));
-            lines.push(help_line("p", "Pick session (accept, abandon siblings)"));
             lines.push(help_line("x", "Stop running session"));
-            lines.push(help_line("r", "Reject session (with optional reason)"));
             lines.push(help_line("d / Del", "Delete session (or project in tree)"));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
