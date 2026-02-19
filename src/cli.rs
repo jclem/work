@@ -406,9 +406,9 @@ pub struct TaskCdArgs {
 
 #[derive(Debug, Args)]
 pub struct TuiArgs {
-    /// Auto-refresh interval in seconds.
-    #[arg(long, default_value_t = 5)]
-    pub interval: u64,
+    /// Auto-refresh interval in seconds (default: 5, or set in config).
+    #[arg(long)]
+    pub interval: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -743,10 +743,10 @@ mod tests {
     }
 
     #[test]
-    fn tui_parses_default_interval() {
+    fn tui_parses_without_interval() {
         let cli = Cli::try_parse_from(["work", "tui"]).unwrap();
         if let Command::Tui(args) = cli.command {
-            assert_eq!(args.interval, 5);
+            assert!(args.interval.is_none());
         } else {
             panic!("expected Command::Tui");
         }
@@ -756,7 +756,7 @@ mod tests {
     fn tui_parses_custom_interval() {
         let cli = Cli::try_parse_from(["work", "tui", "--interval", "10"]).unwrap();
         if let Command::Tui(args) = cli.command {
-            assert_eq!(args.interval, 10);
+            assert_eq!(args.interval, Some(10));
         } else {
             panic!("expected Command::Tui");
         }

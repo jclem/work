@@ -794,7 +794,16 @@ fn move_list_down(state: &mut ListState, len: usize) {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(interval_secs: u64) -> Result<(), CliError> {
+pub fn run(interval_cli: Option<u64>) -> Result<(), CliError> {
+    let interval_secs = interval_cli
+        .or_else(|| {
+            crate::config::load()
+                .ok()
+                .and_then(|c| c.tui)
+                .and_then(|t| t.refresh_interval)
+        })
+        .unwrap_or(5);
+
     enable_raw_mode().map_err(|e| CliError::with_source("failed to enable raw mode", e))?;
 
     let mut stdout = io::stdout();
