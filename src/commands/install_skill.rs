@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::cli::{InstallSkillArgs, Provider};
 use crate::error::{self, CliError};
 
-const SKILL_CONTENT: &str = include_str!("../../templates/skills/work/SKILLS.md");
+const SKILL_CONTENT: &str = include_str!("../../templates/skills/work/SKILL.md");
 
 /// Return the list of providers to install for.
 fn target_providers(provider: Option<Provider>) -> Vec<Provider> {
