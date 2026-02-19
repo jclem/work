@@ -93,6 +93,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Delete(args) => sessions_command::delete(args)?,
         Command::Open(args) => sessions_command::open(args)?,
         Command::Logs(args) => sessions_command::logs(args)?,
+        Command::Cd(args) => tasks_command::cd(args)?,
         Command::Task { command } => tasks_command::execute(command)?,
         Command::Tree(_) => tree_command::run()?,
         Command::Nuke(args) => tasks_command::nuke(args)?,

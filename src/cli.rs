@@ -83,6 +83,9 @@ pub enum Command {
     /// Tail live session output.
     Logs(SessionLogsArgs),
 
+    /// Change directory to a task's worktree, or the project root.
+    Cd(TaskCdArgs),
+
     /// Manage tasks.
     Task {
         #[command(subcommand)]
@@ -584,6 +587,37 @@ mod tests {
     fn task_delete_requires_name() {
         let result = Cli::try_parse_from(["work", "task", "delete"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn cd_parses_with_name() {
+        let cli = Cli::try_parse_from(["work", "cd", "my-task"]).unwrap();
+        if let Command::Cd(args) = cli.command {
+            assert_eq!(args.name.as_deref(), Some("my-task"));
+        } else {
+            panic!("expected Command::Cd");
+        }
+    }
+
+    #[test]
+    fn cd_parses_without_name() {
+        let cli = Cli::try_parse_from(["work", "cd"]).unwrap();
+        if let Command::Cd(args) = cli.command {
+            assert!(args.name.is_none());
+        } else {
+            panic!("expected Command::Cd");
+        }
+    }
+
+    #[test]
+    fn cd_parses_with_project() {
+        let cli = Cli::try_parse_from(["work", "cd", "my-task", "--project", "myproj"]).unwrap();
+        if let Command::Cd(args) = cli.command {
+            assert_eq!(args.name.as_deref(), Some("my-task"));
+            assert_eq!(args.project.as_deref(), Some("myproj"));
+        } else {
+            panic!("expected Command::Cd");
+        }
     }
 
     #[test]
