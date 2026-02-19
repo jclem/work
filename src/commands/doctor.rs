@@ -76,6 +76,7 @@ pub fn run() -> Result<(), CliError> {
 
     let conn = check_database(&mut results);
     let daemon_alive = check_daemon(&mut results);
+    check_gh_cli(&mut results);
 
     if let Some(conn) = &conn {
         check_projects(conn, &mut results);
@@ -448,6 +449,29 @@ fn check_daemon(results: &mut Vec<CheckResult>) -> bool {
                 format!("pid {pid} alive but healthz failed: {e}"),
             ));
             false
+        }
+    }
+}
+
+fn check_gh_cli(results: &mut Vec<CheckResult>) {
+    let output = process::Command::new("gh")
+        .arg("--version")
+        .stdout(process::Stdio::piped())
+        .stderr(process::Stdio::null())
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let version = String::from_utf8_lossy(&o.stdout);
+            let version_line = version.lines().next().unwrap_or("gh (unknown version)");
+            results.push(CheckResult::pass(format!("gh: {version_line}")));
+        }
+        _ => {
+            results.push(CheckResult::warn_with_hint(
+                "gh",
+                "GitHub CLI not found",
+                "install gh for PR tracking: https://cli.github.com",
+            ));
         }
     }
 }

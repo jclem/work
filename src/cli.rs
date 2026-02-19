@@ -80,6 +80,9 @@ pub enum Command {
     /// Open the session's worktree.
     Open(SessionOpenArgs),
 
+    /// Open the session's pull request in a browser.
+    Pr(SessionPrArgs),
+
     /// Tail live session output.
     Logs(SessionLogsArgs),
 
@@ -232,6 +235,13 @@ pub struct SessionDeleteArgs {
 
 #[derive(Debug, Args)]
 pub struct SessionOpenArgs {
+    /// Session ID.
+    #[arg(value_name = "ID")]
+    pub id: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionPrArgs {
     /// Session ID.
     #[arg(value_name = "ID")]
     pub id: i64,
@@ -751,6 +761,16 @@ mod tests {
             assert_eq!(args.id, 42);
         } else {
             panic!("expected Command::Delete");
+        }
+    }
+
+    #[test]
+    fn pr_parses() {
+        let cli = Cli::try_parse_from(["work", "pr", "42"]).unwrap();
+        if let Command::Pr(args) = cli.command {
+            assert_eq!(args.id, 42);
+        } else {
+            panic!("expected Command::Pr");
         }
     }
 

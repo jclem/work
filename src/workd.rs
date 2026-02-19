@@ -202,6 +202,7 @@ pub struct SessionInfo {
     pub lines_changed: Option<u32>,
     pub files_changed: Option<u32>,
     pub summary_excerpt: Option<String>,
+    pub pull_request_url: Option<String>,
     pub project_name: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -400,6 +401,13 @@ impl Workd {
             session_notify.clone(),
             agent_semaphore.clone(),
             session_pids.clone(),
+            shutdown_rx.clone(),
+            self.logger.clone(),
+        ));
+
+        // Spawn background PR cleanup worker.
+        let pr_cleanup_handle = tokio::spawn(pr_cleanup_worker(
+            deletion_notify.clone(),
             shutdown_rx,
             self.logger.clone(),
         ));
@@ -450,7 +458,7 @@ impl Workd {
 
         tokio::select! {
             _ = async {
-                let _ = tokio::join!(deletion_handle, pool_handle, pool_pull_handle, session_handle);
+                let _ = tokio::join!(deletion_handle, pool_handle, pool_pull_handle, session_handle, pr_cleanup_handle);
             } => {}
             _ = force_shutdown_signal(self.logger.clone()) => {
                 self.logger.info("forced shutdown");
@@ -1850,6 +1858,7 @@ fn start_sessions_inner(
             lines_changed: None,
             files_changed: None,
             summary_excerpt: None,
+            pull_request_url: None,
             project_name: Some(project_name.clone()),
             created_at: now,
             updated_at: now,
@@ -1870,7 +1879,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
                 (
                     "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                             t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                            s.createdAt, s.updatedAt, p.name \
+                            s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
                      FROM sessions s \
                      LEFT JOIN tasks t ON s.taskId = t.id \
                      JOIN projects p ON s.projectId = p.id \
@@ -1887,7 +1896,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
                 (
                     "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                             t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                            s.createdAt, s.updatedAt, p.name \
+                            s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
                      FROM sessions s \
                      LEFT JOIN tasks t ON s.taskId = t.id \
                      JOIN projects p ON s.projectId = p.id \
@@ -1903,7 +1912,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
                 (
                     "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                             t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                            s.createdAt, s.updatedAt, p.name \
+                            s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
                      FROM sessions s \
                      LEFT JOIN tasks t ON s.taskId = t.id \
                      JOIN projects p ON s.projectId = p.id \
@@ -1980,6 +1989,7 @@ fn list_sessions_inner(req: ListSessionsRequest) -> Result<Vec<SessionInfo>, Cli
                 lines_changed: None,
                 files_changed: None,
                 summary_excerpt: None,
+                pull_request_url: row.get(13)?,
                 project_name: Some(row.get(12)?),
                 created_at: row.get(10)?,
                 updated_at: row.get(11)?,
@@ -2054,7 +2064,7 @@ fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, Cl
         .query_row(
             "SELECT s.id, s.issueRef, s.attemptNo, s.branchName, s.status, \
                     t.path, s.baseSha, s.headSha, s.mergeable, s.exitCode, \
-                    s.createdAt, s.updatedAt, p.name \
+                    s.createdAt, s.updatedAt, p.name, s.pullRequestUrl \
              FROM sessions s \
              LEFT JOIN tasks t ON s.taskId = t.id \
              JOIN projects p ON s.projectId = p.id \
@@ -2076,6 +2086,7 @@ fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, Cl
                     row.get::<_, i64>(10)?,
                     row.get::<_, i64>(11)?,
                     row.get::<_, String>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             },
         )
@@ -2101,6 +2112,7 @@ fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, Cl
         created_at,
         updated_at,
         project_name,
+        pull_request_url,
     ) = row;
 
     let (has_report, summary_excerpt, lines_changed, files_changed) =
@@ -2130,6 +2142,7 @@ fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, Cl
             lines_changed,
             files_changed,
             summary_excerpt,
+            pull_request_url,
             project_name: Some(project_name),
             created_at,
             updated_at,
@@ -2593,7 +2606,11 @@ The report should be a Markdown file containing:
 1. A one-line summary of what was done
 2. A list of files changed and why
 3. How to test the changes
-4. Any open questions or concerns";
+4. Any open questions or concerns
+
+## Pull Request
+
+After your report has been written, open a draft pull request.";
 
 fn build_session_system_prompt(
     session: &PlannedSession,
@@ -2792,18 +2809,202 @@ fn collect_session_results(
         .map_err(|e| CliError::with_source("failed to store session summary", e))?;
     }
 
+    // Detect PR URL via `gh pr list --head <branch>`.
+    let pr_url = detect_pull_request_url(&session.project_path, &session.branch_name);
+    if let Some(ref url) = pr_url {
+        conn.execute(
+            "UPDATE sessions SET pullRequestUrl = ?1 WHERE id = ?2",
+            params![url, session.id],
+        )
+        .map_err(|e| CliError::with_source("failed to store pull request URL", e))?;
+        logger.info(format!("session {} PR detected: {url}", session.id));
+    }
+
     logger.info(format!(
-        "session {} collected: exit_code={}, head_sha={}, mergeable={:?}, lines_changed={:?}, files_changed={:?}, has_report={}",
+        "session {} collected: exit_code={}, head_sha={}, mergeable={:?}, lines_changed={:?}, files_changed={:?}, has_report={}, pr={}",
         session.id,
         exit_code,
         head_sha.as_deref().unwrap_or("none"),
         mergeable,
         lines_changed,
         files_changed,
-        report_md.is_some()
+        report_md.is_some(),
+        pr_url.as_deref().unwrap_or("none"),
     ));
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Background PR cleanup worker
+// ---------------------------------------------------------------------------
+
+/// Periodically checks sessions with PR URLs and auto-deletes sessions whose
+/// PRs have been merged or closed.
+async fn pr_cleanup_worker(
+    deletion_notify: Arc<Notify>,
+    mut shutdown: watch::Receiver<bool>,
+    logger: Logger,
+) {
+    let logger = logger.child("prCleanupWorker");
+
+    // Wait a bit on startup to avoid doing work immediately.
+    tokio::select! {
+        _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+        _ = shutdown.changed() => {
+            logger.info("shutdown received");
+            return;
+        }
+    }
+
+    loop {
+        // Run cleanup.
+        let cleanup_logger = logger.clone();
+        let deletion_notify_clone = deletion_notify.clone();
+        match tokio::task::spawn_blocking(move || {
+            pr_cleanup_sweep(&cleanup_logger, &deletion_notify_clone)
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => logger.error(format!("PR cleanup failed: {e}")),
+            Err(e) => logger.error(format!("PR cleanup panicked: {e}")),
+        }
+
+        // Sleep for 5 minutes between checks.
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+            _ = shutdown.changed() => {
+                logger.info("shutdown received");
+                break;
+            }
+        }
+    }
+}
+
+/// Query sessions with PR URLs in terminal states and check if their PRs are
+/// merged or closed. If so, delete the session and mark its task for deletion.
+fn pr_cleanup_sweep(logger: &Logger, deletion_notify: &Notify) -> Result<(), CliError> {
+    let conn = db::open_database()?;
+    db::prepare_schema(&conn)?;
+
+    // Find sessions with PR URLs that are in terminal states.
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id, s.pullRequestUrl, s.taskId, p.path \
+             FROM sessions s \
+             JOIN projects p ON s.projectId = p.id \
+             WHERE s.pullRequestUrl IS NOT NULL \
+             AND s.status IN ('reported', 'picked', 'rejected', 'abandoned')",
+        )
+        .map_err(|e| CliError::with_source("failed to query sessions for PR cleanup", e))?;
+
+    let rows: Vec<(i64, String, Option<i64>, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map_err(|e| CliError::with_source("failed to query sessions for PR cleanup", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError::with_source("failed to load sessions for PR cleanup", e))?;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    for (session_id, pr_url, task_id, project_path) in rows {
+        let state = check_pr_state(&project_path, &pr_url);
+
+        match state.as_deref() {
+            Some("MERGED") | Some("CLOSED") => {
+                logger.info(format!(
+                    "session {session_id} PR is {}, cleaning up",
+                    state.as_deref().unwrap_or("unknown")
+                ));
+
+                let now = unix_timestamp_seconds()?;
+
+                // Delete the session.
+                conn.execute(
+                    "DELETE FROM session_reports WHERE sessionId = ?1",
+                    params![session_id],
+                )
+                .map_err(|e| CliError::with_source("failed to delete session report", e))?;
+
+                conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
+                    .map_err(|e| CliError::with_source("failed to delete session", e))?;
+
+                // Mark the task for deletion if it exists and no other sessions reference it.
+                if let Some(tid) = task_id {
+                    let other_sessions: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM sessions WHERE taskId = ?1",
+                            params![tid],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(0);
+
+                    if other_sessions == 0 {
+                        let updated = conn
+                            .execute(
+                                "UPDATE tasks SET status = 'deleting', updatedAt = ?1 WHERE id = ?2 AND status = 'active'",
+                                params![now, tid],
+                            )
+                            .unwrap_or(0);
+
+                        if updated > 0 {
+                            deletion_notify.notify_one();
+                        }
+                    }
+                }
+            }
+            _ => {
+                // PR is still open or we couldn't check — skip.
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Check the state of a PR (OPEN, MERGED, CLOSED) using `gh pr view`.
+fn check_pr_state(project_path: &str, pr_url: &str) -> Option<String> {
+    let output = std::process::Command::new("gh")
+        .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
+        .current_dir(project_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if state.is_empty() { None } else { Some(state) }
+}
+
+/// Detect a pull request URL for a branch using `gh pr list`.
+fn detect_pull_request_url(project_path: &str, branch_name: &str) -> Option<String> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--head",
+            branch_name,
+            "--json",
+            "url",
+            "--jq",
+            ".[0].url",
+        ])
+        .current_dir(project_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() { None } else { Some(url) }
 }
 
 // ---------------------------------------------------------------------------

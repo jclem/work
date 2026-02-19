@@ -127,9 +127,15 @@ pub fn run() -> Result<(), CliError> {
                     None => "",
                 };
 
+                let pr_str = if session.pull_request_url.is_some() {
+                    " PR"
+                } else {
+                    ""
+                };
+
                 let _ = writeln!(
                     out,
-                    "{session_prefix}session {id} {dimmed}(attempt {att}){dimmed:#} {status_style}{status}{status_style:#}{mergeable_str}",
+                    "{session_prefix}session {id} {dimmed}(attempt {att}){dimmed:#} {status_style}{status}{status_style:#}{mergeable_str}{cyan}{pr_str}{cyan:#}",
                     id = session.id,
                     att = session.attempt_no,
                     status = session.status,
