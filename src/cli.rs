@@ -50,19 +50,44 @@ pub enum Command {
         command: ProjectsCommand,
     },
 
-    /// Create a new task in the current project.
-    New(NewArgs),
+    /// Start new sessions for an issue.
+    #[command(alias = "new", alias = "create")]
+    Start(SessionStartArgs),
 
-    /// List tasks.
+    /// List sessions.
     #[command(alias = "ls")]
-    List(ListArgs),
+    List(SessionListArgs),
 
-    /// Change directory to a task's worktree, or the project root.
-    Cd(CdArgs),
+    /// Show session details and report.
+    Show(SessionShowArgs),
 
-    /// Delete a task.
+    /// Rank sessions by heuristic score.
+    Rank(SessionRankArgs),
+
+    /// Accept a session, abandon siblings.
+    Pick(SessionPickArgs),
+
+    /// Reject a session.
+    Reject(SessionRejectArgs),
+
+    /// Stop a running session.
+    Stop(SessionStopArgs),
+
+    /// Delete a session and its worktree.
     #[command(alias = "rm")]
-    Delete(DeleteArgs),
+    Delete(SessionDeleteArgs),
+
+    /// Open the session's worktree.
+    Open(SessionOpenArgs),
+
+    /// Tail live session output.
+    Logs(SessionLogsArgs),
+
+    /// Manage tasks.
+    Task {
+        #[command(subcommand)]
+        command: TaskCommand,
+    },
 
     /// Show a tree of all projects, tasks, and sessions.
     Tree(TreeArgs),
@@ -81,12 +106,6 @@ pub enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
-    },
-
-    /// Manage sessions (parallel agent attempts).
-    Session {
-        #[command(subcommand)]
-        command: SessionCommand,
     },
 
     /// Check the health of the work system.
@@ -110,30 +129,18 @@ pub enum ConfigCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum SessionCommand {
-    /// Start new sessions for an issue.
-    #[command(alias = "new", alias = "create")]
-    Start(SessionStartArgs),
-    /// List sessions.
+pub enum TaskCommand {
+    /// Create a new task in the current project.
+    #[command(alias = "create")]
+    New(TaskNewArgs),
+    /// List tasks.
     #[command(alias = "ls")]
-    List(SessionListArgs),
-    /// Show session details and report.
-    Show(SessionShowArgs),
-    /// Rank sessions by heuristic score.
-    Rank(SessionRankArgs),
-    /// Accept a session, abandon siblings.
-    Pick(SessionPickArgs),
-    /// Reject a session.
-    Reject(SessionRejectArgs),
-    /// Stop a running session.
-    Stop(SessionStopArgs),
-    /// Delete a session and its worktree.
+    List(TaskListArgs),
+    /// Change directory to a task's worktree, or the project root.
+    Cd(TaskCdArgs),
+    /// Delete a task.
     #[command(alias = "rm")]
-    Delete(SessionDeleteArgs),
-    /// Open the session's worktree.
-    Open(SessionOpenArgs),
-    /// Tail live session output.
-    Logs(SessionLogsArgs),
+    Delete(TaskDeleteArgs),
 }
 
 #[derive(Debug, Args)]
@@ -334,7 +341,7 @@ pub struct ProjectsDeleteArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct NewArgs {
+pub struct TaskNewArgs {
     /// Task name. Generated if omitted.
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
@@ -353,7 +360,7 @@ pub struct NewArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct ListArgs {
+pub struct TaskListArgs {
     /// Output as JSON.
     #[arg(long, conflicts_with = "plain")]
     pub json: bool,
@@ -372,7 +379,7 @@ pub struct ListArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct DeleteArgs {
+pub struct TaskDeleteArgs {
     /// Task name.
     #[arg(value_name = "NAME", add = completions::task_name_completer())]
     pub name: String,
@@ -387,7 +394,7 @@ pub struct DeleteArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct CdArgs {
+pub struct TaskCdArgs {
     /// Task name. If omitted, change to the project root.
     #[arg(value_name = "NAME", add = completions::task_name_completer())]
     pub name: Option<String>,
@@ -444,101 +451,131 @@ mod tests {
     }
 
     #[test]
-    fn new_parses_without_name() {
-        let cli = Cli::try_parse_from(["work", "new"]).unwrap();
+    fn task_new_parses_without_name() {
+        let cli = Cli::try_parse_from(["work", "task", "new"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::New(NewArgs { name: None, .. })
+            Command::Task {
+                command: TaskCommand::New(TaskNewArgs { name: None, .. })
+            }
         ));
     }
 
     #[test]
-    fn new_parses_with_name() {
-        let cli = Cli::try_parse_from(["work", "new", "my-task"]).unwrap();
-        if let Command::New(args) = cli.command {
+    fn task_new_parses_with_name() {
+        let cli = Cli::try_parse_from(["work", "task", "new", "my-task"]).unwrap();
+        if let Command::Task {
+            command: TaskCommand::New(args),
+        } = cli.command
+        {
             assert_eq!(args.name.as_deref(), Some("my-task"));
         } else {
-            panic!("expected Command::New");
+            panic!("expected Command::Task New");
         }
     }
 
     #[test]
-    fn new_parses_with_branch_short() {
-        let cli = Cli::try_parse_from(["work", "new", "-b", "feature-branch"]).unwrap();
-        if let Command::New(args) = cli.command {
+    fn task_new_parses_with_branch_short() {
+        let cli = Cli::try_parse_from(["work", "task", "new", "-b", "feature-branch"]).unwrap();
+        if let Command::Task {
+            command: TaskCommand::New(args),
+        } = cli.command
+        {
             assert_eq!(args.branch.as_deref(), Some("feature-branch"));
             assert!(args.name.is_none());
         } else {
-            panic!("expected Command::New");
+            panic!("expected Command::Task New");
         }
     }
 
     #[test]
-    fn new_parses_with_branch_long() {
-        let cli = Cli::try_parse_from(["work", "new", "--branch", "feature-branch"]).unwrap();
-        if let Command::New(args) = cli.command {
+    fn task_new_parses_with_branch_long() {
+        let cli =
+            Cli::try_parse_from(["work", "task", "new", "--branch", "feature-branch"]).unwrap();
+        if let Command::Task {
+            command: TaskCommand::New(args),
+        } = cli.command
+        {
             assert_eq!(args.branch.as_deref(), Some("feature-branch"));
         } else {
-            panic!("expected Command::New");
+            panic!("expected Command::Task New");
         }
     }
 
     #[test]
-    fn new_parses_with_name_and_branch() {
-        let cli = Cli::try_parse_from(["work", "new", "my-task", "-b", "feature-branch"]).unwrap();
-        if let Command::New(args) = cli.command {
+    fn task_new_parses_with_name_and_branch() {
+        let cli = Cli::try_parse_from(["work", "task", "new", "my-task", "-b", "feature-branch"])
+            .unwrap();
+        if let Command::Task {
+            command: TaskCommand::New(args),
+        } = cli.command
+        {
             assert_eq!(args.name.as_deref(), Some("my-task"));
             assert_eq!(args.branch.as_deref(), Some("feature-branch"));
         } else {
-            panic!("expected Command::New");
+            panic!("expected Command::Task New");
         }
     }
 
     #[test]
-    fn list_alias_ls_parses() {
-        let cli = Cli::try_parse_from(["work", "ls"]).unwrap();
-        assert!(matches!(cli.command, Command::List(_)));
+    fn task_list_alias_ls_parses() {
+        let cli = Cli::try_parse_from(["work", "task", "ls"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Task {
+                command: TaskCommand::List(_)
+            }
+        ));
     }
 
     #[test]
-    fn list_rejects_conflicting_output_flags() {
-        let result = Cli::try_parse_from(["work", "list", "--json", "--plain"]);
+    fn task_list_rejects_conflicting_output_flags() {
+        let result = Cli::try_parse_from(["work", "task", "list", "--json", "--plain"]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn cd_parses_with_name() {
-        let cli = Cli::try_parse_from(["work", "cd", "my-task"]).unwrap();
-        if let Command::Cd(args) = cli.command {
+    fn task_cd_parses_with_name() {
+        let cli = Cli::try_parse_from(["work", "task", "cd", "my-task"]).unwrap();
+        if let Command::Task {
+            command: TaskCommand::Cd(args),
+        } = cli.command
+        {
             assert_eq!(args.name.as_deref(), Some("my-task"));
         } else {
-            panic!("expected Command::Cd");
+            panic!("expected Command::Task Cd");
         }
     }
 
     #[test]
-    fn cd_parses_without_name() {
-        let cli = Cli::try_parse_from(["work", "cd"]).unwrap();
-        if let Command::Cd(args) = cli.command {
+    fn task_cd_parses_without_name() {
+        let cli = Cli::try_parse_from(["work", "task", "cd"]).unwrap();
+        if let Command::Task {
+            command: TaskCommand::Cd(args),
+        } = cli.command
+        {
             assert!(args.name.is_none());
         } else {
-            panic!("expected Command::Cd");
+            panic!("expected Command::Task Cd");
         }
     }
 
     #[test]
-    fn delete_alias_rm_parses() {
-        let cli = Cli::try_parse_from(["work", "rm", "my-task"]).unwrap();
-        if let Command::Delete(args) = cli.command {
+    fn task_delete_alias_rm_parses() {
+        let cli = Cli::try_parse_from(["work", "task", "rm", "my-task"]).unwrap();
+        if let Command::Task {
+            command: TaskCommand::Delete(args),
+        } = cli.command
+        {
             assert_eq!(args.name, "my-task");
         } else {
-            panic!("expected Command::Delete");
+            panic!("expected Command::Task Delete");
         }
     }
 
     #[test]
-    fn delete_requires_name() {
-        let result = Cli::try_parse_from(["work", "delete"]);
+    fn task_delete_requires_name() {
+        let result = Cli::try_parse_from(["work", "task", "delete"]);
         assert!(result.is_err());
     }
 
@@ -614,71 +651,87 @@ mod tests {
     }
 
     #[test]
-    fn session_start_parses_positional_issue() {
-        let cli = Cli::try_parse_from(["work", "session", "start", "fix the login bug"]).unwrap();
-        if let Command::Session {
-            command: SessionCommand::Start(args),
-        } = cli.command
-        {
+    fn start_parses_positional_issue() {
+        let cli = Cli::try_parse_from(["work", "start", "fix the login bug"]).unwrap();
+        if let Command::Start(args) = cli.command {
             assert_eq!(args.issue.as_deref(), Some("fix the login bug"));
         } else {
-            panic!("expected Command::Session Start");
+            panic!("expected Command::Start");
         }
     }
 
     #[test]
-    fn session_start_parses_without_issue() {
-        let cli = Cli::try_parse_from(["work", "session", "start"]).unwrap();
-        if let Command::Session {
-            command: SessionCommand::Start(args),
-        } = cli.command
-        {
+    fn start_alias_new_parses() {
+        let cli = Cli::try_parse_from(["work", "new", "fix the login bug"]).unwrap();
+        if let Command::Start(args) = cli.command {
+            assert_eq!(args.issue.as_deref(), Some("fix the login bug"));
+        } else {
+            panic!("expected Command::Start (via alias new)");
+        }
+    }
+
+    #[test]
+    fn start_parses_without_issue() {
+        let cli = Cli::try_parse_from(["work", "start"]).unwrap();
+        if let Command::Start(args) = cli.command {
             assert!(args.issue.is_none());
         } else {
-            panic!("expected Command::Session Start");
+            panic!("expected Command::Start");
         }
     }
 
     #[test]
-    fn session_start_parses_with_agents_flag() {
-        let cli =
-            Cli::try_parse_from(["work", "session", "start", "my issue", "--agents", "3"]).unwrap();
-        if let Command::Session {
-            command: SessionCommand::Start(args),
-        } = cli.command
-        {
+    fn start_parses_with_agents_flag() {
+        let cli = Cli::try_parse_from(["work", "start", "my issue", "--agents", "3"]).unwrap();
+        if let Command::Start(args) = cli.command {
             assert_eq!(args.issue.as_deref(), Some("my issue"));
             assert_eq!(args.agents, 3);
         } else {
-            panic!("expected Command::Session Start");
+            panic!("expected Command::Start");
         }
     }
 
     #[test]
-    fn session_logs_parses_with_follow() {
-        let cli = Cli::try_parse_from(["work", "session", "logs", "42", "--follow"]).unwrap();
-        if let Command::Session {
-            command: SessionCommand::Logs(args),
-        } = cli.command
-        {
+    fn list_alias_ls_parses() {
+        let cli = Cli::try_parse_from(["work", "ls"]).unwrap();
+        assert!(matches!(cli.command, Command::List(_)));
+    }
+
+    #[test]
+    fn list_rejects_conflicting_output_flags() {
+        let result = Cli::try_parse_from(["work", "list", "--json", "--plain"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn delete_alias_rm_parses() {
+        let cli = Cli::try_parse_from(["work", "rm", "42"]).unwrap();
+        if let Command::Delete(args) = cli.command {
+            assert_eq!(args.id, 42);
+        } else {
+            panic!("expected Command::Delete");
+        }
+    }
+
+    #[test]
+    fn logs_parses_with_follow() {
+        let cli = Cli::try_parse_from(["work", "logs", "42", "--follow"]).unwrap();
+        if let Command::Logs(args) = cli.command {
             assert_eq!(args.id, 42);
             assert!(args.follow);
         } else {
-            panic!("expected Command::Session Logs");
+            panic!("expected Command::Logs");
         }
     }
 
     #[test]
-    fn session_logs_parses_without_follow() {
-        let cli = Cli::try_parse_from(["work", "session", "logs", "7"]).unwrap();
-        if let Command::Session {
-            command: SessionCommand::Logs(args),
-        } = cli.command
-        {
+    fn logs_parses_without_follow() {
+        let cli = Cli::try_parse_from(["work", "logs", "7"]).unwrap();
+        if let Command::Logs(args) = cli.command {
             assert_eq!(args.id, 7);
             assert!(!args.follow);
         } else {
-            panic!("expected Command::Session Logs");
+            panic!("expected Command::Logs");
         }
     }
 }

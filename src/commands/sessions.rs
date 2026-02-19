@@ -2,30 +2,14 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 
 use crate::cli::{
-    SessionCommand, SessionDeleteArgs, SessionListArgs, SessionLogsArgs, SessionOpenArgs,
-    SessionPickArgs, SessionRankArgs, SessionRejectArgs, SessionShowArgs, SessionStartArgs,
-    SessionStopArgs,
+    SessionDeleteArgs, SessionListArgs, SessionLogsArgs, SessionOpenArgs, SessionPickArgs,
+    SessionRankArgs, SessionRejectArgs, SessionShowArgs, SessionStartArgs, SessionStopArgs,
 };
 use crate::client;
 use crate::error::{self, CliError};
 use crate::workd::SessionInfo;
 
-pub fn execute(command: SessionCommand) -> Result<(), CliError> {
-    match command {
-        SessionCommand::Start(args) => start(args),
-        SessionCommand::List(args) => list(args),
-        SessionCommand::Show(args) => show(args),
-        SessionCommand::Rank(args) => rank(args),
-        SessionCommand::Pick(args) => pick(args),
-        SessionCommand::Reject(args) => reject(args),
-        SessionCommand::Stop(args) => stop(args),
-        SessionCommand::Delete(args) => delete(args),
-        SessionCommand::Open(args) => open(args),
-        SessionCommand::Logs(args) => logs(args),
-    }
-}
-
-fn start(args: SessionStartArgs) -> Result<(), CliError> {
+pub fn start(args: SessionStartArgs) -> Result<(), CliError> {
     let issue = match args.issue {
         Some(text) => text,
         None => read_stdin_issue()?,
@@ -54,7 +38,7 @@ fn start(args: SessionStartArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn list(args: SessionListArgs) -> Result<(), CliError> {
+pub fn list(args: SessionListArgs) -> Result<(), CliError> {
     let cwd = std::env::current_dir()
         .map_err(|e| CliError::with_source("failed to read current directory", e))?
         .canonicalize()
@@ -133,7 +117,7 @@ fn list(args: SessionListArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn show(args: SessionShowArgs) -> Result<(), CliError> {
+pub fn show(args: SessionShowArgs) -> Result<(), CliError> {
     let resp = client::show_session(args.id)?;
     let s = &resp.session;
 
@@ -166,7 +150,7 @@ fn show(args: SessionShowArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn rank(args: SessionRankArgs) -> Result<(), CliError> {
+pub fn rank(args: SessionRankArgs) -> Result<(), CliError> {
     let cwd = std::env::current_dir()
         .map_err(|e| CliError::with_source("failed to read current directory", e))?
         .canonicalize()
@@ -237,31 +221,31 @@ fn rank(args: SessionRankArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn pick(args: SessionPickArgs) -> Result<(), CliError> {
+pub fn pick(args: SessionPickArgs) -> Result<(), CliError> {
     client::pick_session(args.id)?;
     error::print_success(&format!("Session {} picked.", args.id));
     Ok(())
 }
 
-fn reject(args: SessionRejectArgs) -> Result<(), CliError> {
+pub fn reject(args: SessionRejectArgs) -> Result<(), CliError> {
     client::reject_session(args.id, args.reason.as_deref())?;
     error::print_success(&format!("Session {} rejected.", args.id));
     Ok(())
 }
 
-fn stop(args: SessionStopArgs) -> Result<(), CliError> {
+pub fn stop(args: SessionStopArgs) -> Result<(), CliError> {
     client::stop_session(args.id)?;
     error::print_success(&format!("Session {} stopped.", args.id));
     Ok(())
 }
 
-fn delete(args: SessionDeleteArgs) -> Result<(), CliError> {
+pub fn delete(args: SessionDeleteArgs) -> Result<(), CliError> {
     client::delete_session(args.id)?;
     error::print_success(&format!("Session {} deleted.", args.id));
     Ok(())
 }
 
-fn logs(args: SessionLogsArgs) -> Result<(), CliError> {
+pub fn logs(args: SessionLogsArgs) -> Result<(), CliError> {
     let resp = client::show_session(args.id)?;
     let task_path = resp
         .session
@@ -303,7 +287,7 @@ fn logs(args: SessionLogsArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn open(args: SessionOpenArgs) -> Result<(), CliError> {
+pub fn open(args: SessionOpenArgs) -> Result<(), CliError> {
     let resp = client::show_session(args.id)?;
     let path = resp
         .session
