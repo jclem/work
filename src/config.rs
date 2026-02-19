@@ -46,6 +46,14 @@ fn default_pool_pull_interval() -> u64 {
     3600
 }
 
+fn default_pr_cleanup_enabled() -> bool {
+    true
+}
+
+fn default_pr_cleanup_interval() -> u64 {
+    300
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DaemonConfig {
     #[serde(rename = "pool-max-load", default = "default_max_load")]
@@ -61,6 +69,16 @@ pub struct DaemonConfig {
     /// Seconds between pool pull cycles (default 3600 = 1 hour).
     #[serde(rename = "pool-pull-interval", default = "default_pool_pull_interval")]
     pub pool_pull_interval: u64,
+    /// When true, sessions with merged/closed PRs are automatically cleaned up.
+    /// Defaults to true.
+    #[serde(rename = "pr-cleanup-enabled", default = "default_pr_cleanup_enabled")]
+    pub pr_cleanup_enabled: bool,
+    /// Seconds between PR cleanup sweeps (default 300 = 5 minutes).
+    #[serde(
+        rename = "pr-cleanup-interval",
+        default = "default_pr_cleanup_interval"
+    )]
+    pub pr_cleanup_interval: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,6 +414,38 @@ echo "local"
         let config: Config = toml::from_str(toml_str).unwrap();
         let daemon = config.daemon.unwrap();
         assert_eq!(daemon.pool_pull_interval, 3600);
+    }
+
+    #[test]
+    fn pr_cleanup_enabled_defaults_to_true() {
+        let toml_str = "[daemon]\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let daemon = config.daemon.unwrap();
+        assert!(daemon.pr_cleanup_enabled);
+    }
+
+    #[test]
+    fn pr_cleanup_enabled_can_be_disabled() {
+        let toml_str = "[daemon]\npr-cleanup-enabled = false\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let daemon = config.daemon.unwrap();
+        assert!(!daemon.pr_cleanup_enabled);
+    }
+
+    #[test]
+    fn pr_cleanup_interval_defaults_to_300() {
+        let toml_str = "[daemon]\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let daemon = config.daemon.unwrap();
+        assert_eq!(daemon.pr_cleanup_interval, 300);
+    }
+
+    #[test]
+    fn pr_cleanup_interval_can_be_customized() {
+        let toml_str = "[daemon]\npr-cleanup-interval = 600\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let daemon = config.daemon.unwrap();
+        assert_eq!(daemon.pr_cleanup_interval, 600);
     }
 
     #[test]

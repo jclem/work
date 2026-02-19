@@ -2868,6 +2868,23 @@ async fn pr_cleanup_worker(
     }
 
     loop {
+        let cfg = config::load().ok().and_then(|c| c.daemon);
+        let enabled = cfg.as_ref().is_none_or(|d| d.pr_cleanup_enabled);
+        let interval_secs = cfg.as_ref().map_or(300, |d| d.pr_cleanup_interval);
+
+        if !enabled {
+            // Feature is off — sleep for the configured interval then re-check
+            // in case the user enables it later.
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
+                _ = shutdown.changed() => {
+                    logger.info("shutdown received");
+                    return;
+                }
+            }
+            continue;
+        }
+
         // Run cleanup.
         let cleanup_logger = logger.clone();
         let deletion_notify_clone = deletion_notify.clone();
@@ -2881,9 +2898,8 @@ async fn pr_cleanup_worker(
             Err(e) => logger.error(format!("PR cleanup panicked: {e}")),
         }
 
-        // Sleep for 5 minutes between checks.
         tokio::select! {
-            _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
             _ = shutdown.changed() => {
                 logger.info("shutdown received");
                 break;
