@@ -2,13 +2,11 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 
 use crate::cli::{
-    SessionDeleteArgs, SessionListArgs, SessionLogsArgs, SessionOpenArgs, SessionPickArgs,
-    SessionPrArgs, SessionRankArgs, SessionRejectArgs, SessionShowArgs, SessionStartArgs,
-    SessionStopArgs,
+    SessionDeleteArgs, SessionListArgs, SessionLogsArgs, SessionOpenArgs, SessionPrArgs,
+    SessionShowArgs, SessionStartArgs, SessionStopArgs,
 };
 use crate::client;
 use crate::error::{self, CliError};
-use crate::workd::SessionInfo;
 
 pub fn start(args: SessionStartArgs) -> Result<(), CliError> {
     let issue = match args.issue {
@@ -170,89 +168,6 @@ pub fn show(args: SessionShowArgs) -> Result<(), CliError> {
         println!("{report}");
     }
 
-    Ok(())
-}
-
-pub fn rank(args: SessionRankArgs) -> Result<(), CliError> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| CliError::with_source("failed to read current directory", e))?
-        .canonicalize()
-        .map_err(|e| CliError::with_source("failed to canonicalize current directory", e))?;
-    let cwd_str = cwd.to_string_lossy().to_string();
-
-    let sessions =
-        client::list_sessions(Some(&args.issue), args.project.as_deref(), Some(&cwd_str))?;
-
-    if sessions.is_empty() {
-        eprintln!("No sessions found for this issue.");
-        return Ok(());
-    }
-
-    let mut scored: Vec<(i64, &SessionInfo)> = sessions
-        .iter()
-        .map(|s| {
-            let mut score: i64 = 0;
-            if s.has_report {
-                score += 100;
-            }
-            if s.mergeable == Some(true) {
-                score += 50;
-            }
-            if let Some(lines) = s.lines_changed {
-                score -= lines as i64 / 20;
-            }
-            if let Some(files) = s.files_changed
-                && files > 20
-            {
-                score -= 10;
-            }
-            (score, s)
-        })
-        .collect();
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
-
-    let id_width = scored
-        .iter()
-        .fold("ID".len(), |max, (_, s)| max.max(s.id.to_string().len()));
-    let status_width = scored
-        .iter()
-        .fold("STATUS".len(), |max, (_, s)| max.max(s.status.len()));
-
-    println!(
-        "{:>5}  {:<id_width$}  {:<status_width$}  MERGE  DIFF     SUMMARY",
-        "SCORE", "ID", "STATUS"
-    );
-
-    for (score, s) in &scored {
-        let mergeable = match s.mergeable {
-            Some(true) => "yes  ",
-            Some(false) => "no   ",
-            None => "-    ",
-        };
-        let diff = match (s.lines_changed, s.files_changed) {
-            (Some(l), Some(f)) => format!("+/-{l} {f}f"),
-            _ => "-".to_string(),
-        };
-        let summary = s.summary_excerpt.as_deref().unwrap_or("-");
-        println!(
-            "{score:>5}  {:<id_width$}  {:<status_width$}  {mergeable}  {diff:<7}  {summary}",
-            s.id, s.status
-        );
-    }
-
-    Ok(())
-}
-
-pub fn pick(args: SessionPickArgs) -> Result<(), CliError> {
-    client::pick_session(args.id)?;
-    error::print_success(&format!("Session {} picked.", args.id));
-    Ok(())
-}
-
-pub fn reject(args: SessionRejectArgs) -> Result<(), CliError> {
-    client::reject_session(args.id, args.reason.as_deref())?;
-    error::print_success(&format!("Session {} rejected.", args.id));
     Ok(())
 }
 

@@ -166,17 +166,6 @@ pub struct ShowSessionResponse {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct PickSessionRequest {
-    pub id: i64,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct RejectSessionRequest {
-    pub id: i64,
-    pub reason: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
 pub struct DeleteSessionRequest {
     pub id: i64,
 }
@@ -438,8 +427,6 @@ impl Workd {
             .route("/sessions/start", post(handle_start_sessions))
             .route("/sessions/list", post(handle_list_sessions))
             .route("/sessions/show", post(handle_show_session))
-            .route("/sessions/pick", post(handle_pick_session))
-            .route("/sessions/reject", post(handle_reject_session))
             .route("/sessions/delete", post(handle_delete_session))
             .route("/sessions/stop", post(handle_stop_session))
             .layer(middleware::from_fn_with_state(
@@ -1290,20 +1277,6 @@ async fn handle_show_session(
     Json(req): Json<ShowSessionRequest>,
 ) -> Result<Json<ShowSessionResponse>, ApiError> {
     Ok(Json(run_blocking(move || show_session_inner(req)).await?))
-}
-
-async fn handle_pick_session(
-    Json(req): Json<PickSessionRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    run_blocking(move || pick_session_inner(req)).await?;
-    Ok(Json(serde_json::json!({})))
-}
-
-async fn handle_reject_session(
-    Json(req): Json<RejectSessionRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    run_blocking(move || reject_session_inner(req)).await?;
-    Ok(Json(serde_json::json!({})))
 }
 
 async fn handle_delete_session(
@@ -2157,79 +2130,6 @@ fn show_session_inner(req: ShowSessionRequest) -> Result<ShowSessionResponse, Cl
     })
 }
 
-fn pick_session_inner(req: PickSessionRequest) -> Result<(), CliError> {
-    let conn = db::open_database()?;
-    db::prepare_schema(&conn)?;
-
-    let now = unix_timestamp_seconds()?;
-
-    // Look up the session to get its project and issue.
-    let (project_id, issue_ref): (i64, String) = conn
-        .query_row(
-            "SELECT projectId, issueRef FROM sessions WHERE id = ?1",
-            params![req.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|source| match source {
-            rusqlite::Error::QueryReturnedNoRows => CliError::with_hint(
-                "session not found",
-                "run `work session list` to see existing sessions",
-            ),
-            other => CliError::with_source("failed to look up session", other),
-        })?;
-
-    // Update target session to 'picked'.
-    conn.execute(
-        "UPDATE sessions SET status = 'picked', updatedAt = ?1 WHERE id = ?2",
-        params![now, req.id],
-    )
-    .map_err(|e| CliError::with_source("failed to pick session", e))?;
-
-    // Abandon all other sessions for the same issue.
-    conn.execute(
-        "UPDATE sessions SET status = 'abandoned', updatedAt = ?1 \
-         WHERE projectId = ?2 AND issueRef = ?3 AND id != ?4 \
-         AND status NOT IN ('picked', 'rejected', 'abandoned', 'failed')",
-        params![now, project_id, issue_ref, req.id],
-    )
-    .map_err(|e| CliError::with_source("failed to abandon sibling sessions", e))?;
-
-    Ok(())
-}
-
-fn reject_session_inner(req: RejectSessionRequest) -> Result<(), CliError> {
-    let conn = db::open_database()?;
-    db::prepare_schema(&conn)?;
-
-    let now = unix_timestamp_seconds()?;
-
-    let updated = conn
-        .execute(
-            "UPDATE sessions SET status = 'rejected', updatedAt = ?1 WHERE id = ?2",
-            params![now, req.id],
-        )
-        .map_err(|e| CliError::with_source("failed to reject session", e))?;
-
-    if updated == 0 {
-        return Err(CliError::with_hint(
-            "session not found",
-            "run `work session list` to see existing sessions",
-        ));
-    }
-
-    // Store rejection reason as a note in summaryJson if provided.
-    if let Some(reason) = req.reason {
-        let summary = serde_json::json!({ "rejection_reason": reason });
-        let _ = conn.execute(
-            "INSERT OR REPLACE INTO session_reports (sessionId, reportMd, summaryJson) \
-             VALUES (?1, COALESCE((SELECT reportMd FROM session_reports WHERE sessionId = ?1), ''), ?2)",
-            params![req.id, summary.to_string()],
-        );
-    }
-
-    Ok(())
-}
-
 fn delete_session_inner(
     req: DeleteSessionRequest,
     deletion_notify: &Arc<Notify>,
@@ -2921,7 +2821,7 @@ fn pr_cleanup_sweep(logger: &Logger, deletion_notify: &Notify) -> Result<(), Cli
              FROM sessions s \
              JOIN projects p ON s.projectId = p.id \
              WHERE s.pullRequestUrl IS NOT NULL \
-             AND s.status IN ('reported', 'picked', 'rejected', 'abandoned')",
+             AND s.status IN ('reported', 'abandoned')",
         )
         .map_err(|e| CliError::with_source("failed to query sessions for PR cleanup", e))?;
 

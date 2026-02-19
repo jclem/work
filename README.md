@@ -4,7 +4,7 @@ Delegate coding tasks to AI agents, each in its own isolated git worktree. No
 stashing, no branch juggling, no waiting.
 
 `work` manages git worktrees and AI agent sessions so you can describe what you
-want, let agents solve it in parallel, and pick the best result.
+want and let agents solve it in parallel.
 
 ```
 $ work new "fix the off-by-one error in the pagination logic"
@@ -13,10 +13,10 @@ $ work new "fix the off-by-one error in the pagination logic"
 
 ## Highlights
 
-- **Session-based workflow** -- describe an issue, spawn parallel agent sessions, pick the best PR
+- **Session-based workflow** -- describe an issue and spawn parallel agent sessions
 - **Isolated worktrees** -- every session and task gets its own directory and branch
 - **Parallel agents** -- start multiple attempts on the same issue with `--agents N`
-- **Interactive TUI** -- monitor all sessions, view logs, pick winners, and manage projects from a dashboard
+- **Interactive TUI** -- monitor all sessions, view logs, and manage projects from a dashboard
 - **Pre-warmed pool** -- large repos stay fast because worktrees are created in the background
 - **Post-creation hooks** -- run setup scripts (`npm install`, etc.) automatically after creating a worktree
 - **Resource-aware** -- pool pre-warming backs off when CPU or memory is under pressure
@@ -101,26 +101,13 @@ Switch to the TUI to watch sessions as they work. Key actions:
 | `Enter` | View session details and report |
 | `Ctrl+L` | View live session logs |
 | `Ctrl+P` | Open the session's PR in a browser |
-| `p` | Pick (accept) a session |
-| `r` | Reject a session |
 | `x` | Stop a running session |
 | `s` | Start a new session |
 
-### 4. Pick the best result
-
-Once agents finish, review their PRs and reports, then pick the winner:
+### 4. Clean up
 
 ```bash
-work pick 42       # accept session 42, auto-reject its siblings
-```
-
-Or from the TUI, press `p` on the session you like. Sibling sessions (other
-attempts on the same issue) are automatically rejected.
-
-### 5. Clean up
-
-```bash
-work delete 43     # remove a rejected session and its worktree
+work delete 43     # remove a session and its worktree
 ```
 
 ## Concepts
@@ -146,10 +133,10 @@ unit of `work`. Each session:
 - Gets its own worktree and branch
 - Runs an agent that writes code and opens a draft PR
 - Produces a report summarizing what was done
-- Has a status: `planned` → `running` → `reported` → `picked` or `rejected`
+- Has a status: `planned` → `running` → `reported`
 
-Multiple sessions can target the same issue (parallel attempts). Use
-`work rank` to score them or review them in the TUI.
+Multiple sessions can target the same issue (parallel attempts). Review them
+in the TUI.
 
 ### Issues
 
@@ -200,7 +187,6 @@ work list --all                   # List sessions across all projects
 work list --json                  # JSON output
 work ls                           # Alias for list
 work show 42                      # Show session details and report
-work rank --issue "fix the bug"   # Rank sessions by heuristic score
 work tree                         # Show a tree of all projects, tasks, and sessions
 
 # Monitor
@@ -208,9 +194,6 @@ work logs 42                      # View session output
 work logs 42 --follow             # Tail output in real time (like tail -f)
 
 # Act on results
-work pick 42                      # Accept session, auto-reject siblings
-work reject 42                    # Reject a session
-work reject 42 --reason "..."     # Reject with feedback
 work stop 42                      # Stop a running session
 work pr 42                        # Open the session's PR in a browser
 work open 42                      # cd into the session's worktree
@@ -268,8 +251,6 @@ The TUI has three tabs:
 | `Enter` | View session details |
 | `Ctrl+L` | View session logs |
 | `Ctrl+P` | Open PR in browser |
-| `p` | Pick (accept) session |
-| `r` | Reject session |
 | `x` | Stop session |
 | `d` | Delete session |
 | `` ` `` | Toggle tree/flat view |
@@ -389,7 +370,7 @@ When you run `work new "fix the bug"`:
 3. The daemon picks up the session, creates a worktree and branch, and spawns an agent
 4. The agent works in the worktree: reads code, makes changes, opens a draft PR
 5. When the agent finishes, the session moves to `reported` with a summary
-6. You review the result and `pick` or `reject` the session
+6. You review the result and manage the session as needed
 
 Session statuses:
 
@@ -398,8 +379,6 @@ Session statuses:
 | `planned` | Created, waiting to start |
 | `running` | Agent is actively working |
 | `reported` | Agent finished with a report |
-| `picked` | You accepted this session |
-| `rejected` | You rejected this session |
 | `stopped` | You stopped the agent |
 | `failed` | The agent encountered an error |
 
