@@ -105,6 +105,9 @@ pub enum Command {
         command: ConfigCommand,
     },
 
+    /// Install the work AI agent skill into a project or global config.
+    InstallSkill(InstallSkillArgs),
+
     /// Check the health of the work system.
     Doctor,
 
@@ -394,6 +397,23 @@ pub struct NukeArgs {
     /// Skip confirmation prompt.
     #[arg(long)]
     pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct InstallSkillArgs {
+    /// Install only for a specific provider instead of all providers.
+    #[arg(short, long, value_name = "PROVIDER")]
+    pub provider: Option<Provider>,
+
+    /// Install into the global config directory instead of the current directory.
+    #[arg(short, long)]
+    pub global: bool,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum Provider {
+    Claude,
+    Codex,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -782,5 +802,67 @@ mod tests {
     fn tui_alias_ui_parses() {
         let cli = Cli::try_parse_from(["work", "ui"]).unwrap();
         assert!(matches!(cli.command, Command::Tui(_)));
+    }
+
+    #[test]
+    fn install_skill_parses_no_args() {
+        let cli = Cli::try_parse_from(["work", "install-skill"]).unwrap();
+        if let Command::InstallSkill(args) = cli.command {
+            assert!(args.provider.is_none());
+            assert!(!args.global);
+        } else {
+            panic!("expected Command::InstallSkill");
+        }
+    }
+
+    #[test]
+    fn install_skill_parses_provider_claude() {
+        let cli = Cli::try_parse_from(["work", "install-skill", "-p", "claude"]).unwrap();
+        if let Command::InstallSkill(args) = cli.command {
+            assert!(matches!(args.provider, Some(Provider::Claude)));
+        } else {
+            panic!("expected Command::InstallSkill");
+        }
+    }
+
+    #[test]
+    fn install_skill_parses_provider_codex() {
+        let cli = Cli::try_parse_from(["work", "install-skill", "--provider", "codex"]).unwrap();
+        if let Command::InstallSkill(args) = cli.command {
+            assert!(matches!(args.provider, Some(Provider::Codex)));
+        } else {
+            panic!("expected Command::InstallSkill");
+        }
+    }
+
+    #[test]
+    fn install_skill_parses_global_flag() {
+        let cli = Cli::try_parse_from(["work", "install-skill", "--global"]).unwrap();
+        if let Command::InstallSkill(args) = cli.command {
+            assert!(args.global);
+        } else {
+            panic!("expected Command::InstallSkill");
+        }
+    }
+
+    #[test]
+    fn install_skill_parses_global_short_flag() {
+        let cli = Cli::try_parse_from(["work", "install-skill", "-g"]).unwrap();
+        if let Command::InstallSkill(args) = cli.command {
+            assert!(args.global);
+        } else {
+            panic!("expected Command::InstallSkill");
+        }
+    }
+
+    #[test]
+    fn install_skill_parses_combined_flags() {
+        let cli = Cli::try_parse_from(["work", "install-skill", "-g", "-p", "claude"]).unwrap();
+        if let Command::InstallSkill(args) = cli.command {
+            assert!(args.global);
+            assert!(matches!(args.provider, Some(Provider::Claude)));
+        } else {
+            panic!("expected Command::InstallSkill");
+        }
     }
 }
