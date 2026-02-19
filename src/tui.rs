@@ -131,13 +131,7 @@ enum ProjectTreeRow {
 // Sessions view mode
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionsView {
-    /// Project tree with sessions as children.
-    Tree,
-    /// Flat list of all sessions.
-    Flat,
-}
+use crate::state::SessionsView;
 
 // ---------------------------------------------------------------------------
 // App state
@@ -205,7 +199,7 @@ impl App {
         let ui_state = crate::state::load();
         let mut app = Self {
             tab: Tab::Sessions,
-            sessions_view: SessionsView::Tree,
+            sessions_view: ui_state.sessions_view,
             should_quit: false,
             refresh_interval,
             last_refresh: Instant::now() - Duration::from_secs(999),
@@ -237,6 +231,7 @@ impl App {
     fn save_ui_state(&self) {
         crate::state::save(&crate::state::UiState {
             show_empty_projects: self.show_empty_projects,
+            sessions_view: self.sessions_view,
         });
     }
 
@@ -442,6 +437,7 @@ impl App {
             SessionsView::Tree => self.clamp_selection_projects(),
             SessionsView::Flat => self.clamp_selection_sessions(),
         }
+        self.save_ui_state();
     }
 
     fn move_up(&mut self) {
