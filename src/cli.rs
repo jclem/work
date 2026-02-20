@@ -235,6 +235,8 @@ pub enum DaemonCommand {
     Stop,
     /// Restart the daemon.
     Restart(DaemonRestartArgs),
+    /// Show daemon logs.
+    Logs(DaemonLogsArgs),
     /// Install the daemon as a Launch Agent (macOS).
     Install,
     /// Uninstall the daemon Launch Agent (macOS).
@@ -272,6 +274,23 @@ pub struct DaemonRestartArgs {
     /// Override the unix socket path used by the daemon.
     #[arg(long, value_name = "PATH")]
     pub socket: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct DaemonLogsArgs {
+    /// Follow the log output (like `tail -f`).
+    #[arg(short, long)]
+    pub follow: bool,
+
+    #[command(subcommand)]
+    pub command: Option<DaemonLogsCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DaemonLogsCommand {
+    /// Print the daemon log path.
+    Path,
 }
 
 #[derive(Debug, Subcommand)]
@@ -681,6 +700,68 @@ mod tests {
                 command: DaemonCommand::Restart(_),
             }
         ));
+    }
+
+    #[test]
+    fn daemon_logs_parses_without_follow() {
+        let cli = Cli::try_parse_from(["work", "daemon", "logs"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon {
+                command: DaemonCommand::Logs(DaemonLogsArgs {
+                    follow: false,
+                    command: None,
+                }),
+            }
+        ));
+    }
+
+    #[test]
+    fn daemon_logs_parses_with_follow() {
+        let cli = Cli::try_parse_from(["work", "daemon", "logs", "--follow"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon {
+                command: DaemonCommand::Logs(DaemonLogsArgs {
+                    follow: true,
+                    command: None,
+                }),
+            }
+        ));
+    }
+
+    #[test]
+    fn daemon_logs_path_parses() {
+        let cli = Cli::try_parse_from(["work", "daemon", "logs", "path"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon {
+                command: DaemonCommand::Logs(DaemonLogsArgs {
+                    follow: false,
+                    command: Some(DaemonLogsCommand::Path),
+                }),
+            }
+        ));
+    }
+
+    #[test]
+    fn daemon_logs_accepts_short_follow() {
+        let cli = Cli::try_parse_from(["work", "daemon", "logs", "-f"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon {
+                command: DaemonCommand::Logs(DaemonLogsArgs {
+                    follow: true,
+                    command: None,
+                }),
+            }
+        ));
+    }
+
+    #[test]
+    fn daemon_logs_rejects_follow_with_path() {
+        let result = Cli::try_parse_from(["work", "daemon", "logs", "path", "--follow"]);
+        assert!(result.is_err());
     }
 
     #[test]

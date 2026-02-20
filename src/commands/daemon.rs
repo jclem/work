@@ -1,8 +1,9 @@
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
 
-use crate::cli::DaemonCommand;
+use crate::cli::{DaemonCommand, DaemonLogsArgs, DaemonLogsCommand};
 use crate::error::{self, CliError};
 use crate::logger::Logger;
 use crate::paths;
@@ -45,6 +46,7 @@ pub async fn execute(command: DaemonCommand, logger: Logger) -> Result<(), CliEr
             error::print_success(&format!("stopped daemon (pid {pid})"));
             Ok(())
         }
+        DaemonCommand::Logs(args) => logs(args),
         DaemonCommand::Install => super::daemon_install::install(),
         DaemonCommand::Uninstall => super::daemon_install::uninstall(),
         DaemonCommand::Restart(args) => {
@@ -97,6 +99,44 @@ fn daemonize(socket: Option<PathBuf>) -> Result<(), CliError> {
         child.id(),
         log_path.display()
     ));
+
+    Ok(())
+}
+
+fn logs(args: DaemonLogsArgs) -> Result<(), CliError> {
+    let log_path = paths::daemon_log_path();
+
+    if let Some(DaemonLogsCommand::Path) = args.command {
+        println!("{}", log_path.display());
+        return Ok(());
+    }
+
+    if !log_path.exists() {
+        return Err(CliError::with_hint(
+            format!("no daemon log found at {}", log_path.display()),
+            "start the daemon with `work daemon start --detach` or `work daemon install`",
+        ));
+    }
+
+    if args.follow {
+        let status = process::Command::new("tail")
+            .args(["-f", &log_path.to_string_lossy()])
+            .status()
+            .map_err(|e| CliError::with_source("failed to run tail", e))?;
+
+        if !status.success() {
+            return Err(CliError::new("tail exited with a non-zero status"));
+        }
+    } else {
+        let file = fs::File::open(&log_path)
+            .map_err(|e| CliError::with_source("failed to open daemon log", e))?;
+        let reader = io::BufReader::new(file);
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        io::copy(&mut io::BufReader::new(reader), &mut out)
+            .map_err(|e| CliError::with_source("failed to read daemon log", e))?;
+        let _ = out.flush();
+    }
 
     Ok(())
 }

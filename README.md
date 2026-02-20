@@ -293,6 +293,9 @@ work daemon start --detach        # Run in the background
 work daemon start --force         # Replace an already-running daemon
 work daemon stop                  # Stop
 work daemon restart               # Restart
+work daemon logs                  # Print daemon logs
+work daemon logs --follow         # Follow daemon logs (tail -f)
+work daemon logs path             # Print daemon log path
 work daemon pid                   # Print PID
 work daemon socket-path           # Print socket path
 work daemon install               # Install as a Launch Agent (macOS)
@@ -433,9 +436,9 @@ Override with `work daemon start --socket /path/to/workd.sock` or the
 |------|-------------|
 | Database | `~/.local/share/work/database.sqlite` |
 | Global config | `~/.config/work/config.toml` |
-| Daemon socket | `$XDG_RUNTIME_DIR/work/workd.sock` |
-| Daemon PID | `$XDG_RUNTIME_DIR/work/workd.pid` |
-| Daemon log | `$XDG_RUNTIME_DIR/work/workd.log` |
+| Daemon socket | `$XDG_RUNTIME_DIR/work/workd.sock` (or system temp dir fallback) |
+| Daemon PID | `$XDG_RUNTIME_DIR/work/workd.pid` (or system temp dir fallback) |
+| Daemon log | `$XDG_RUNTIME_DIR/work/workd.log` (or system temp dir fallback) |
 | Worktrees | `~/.local/share/work/<project>/worktrees/<task>/` |
 
 All paths respect `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_RUNTIME_DIR`.
