@@ -519,13 +519,17 @@ default = "claude"
 The command template used to launch an agent session. This is an array of
 strings where the first element is the binary and the rest are arguments.
 
-Three placeholders are available and will be replaced at runtime:
+Four placeholders are available and will be replaced at runtime:
 
 | Placeholder | Replaced with |
 |---|---|
 | `{issue}` | The issue description text |
+| `{issue_id}` | Extracted issue identifier (for example `ABC-123`) when present in `{issue}`; empty otherwise |
 | `{system_prompt}` | The effective system prompt |
 | `{report_path}` | Path where the agent should write its report |
+
+Placeholders can be embedded inside larger strings (for example
+`"foo_{issue_id}"`).
 
 | | |
 |---|---|

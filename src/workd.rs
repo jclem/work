@@ -2419,15 +2419,12 @@ async fn run_agent_session(
         return;
     }
 
-    let resolved_args: Vec<String> = session
-        .agent_command
-        .iter()
-        .map(|arg| {
-            arg.replace("{issue}", &session.issue_ref)
-                .replace("{system_prompt}", &system_prompt)
-                .replace("{report_path}", &report_path)
-        })
-        .collect();
+    let resolved_args = resolve_agent_command_args(
+        &session.agent_command,
+        &session.issue_ref,
+        &system_prompt,
+        &report_path,
+    );
 
     // Ensure .work directory exists in the worktree.
     let work_dir = Path::new(&task_path).join(".work");
@@ -2587,6 +2584,8 @@ fn build_session_system_prompt(
 
     let template = template.as_deref().unwrap_or(DEFAULT_SESSION_SYSTEM_PROMPT);
 
+    let issue_id = extract_issue_id(&session.issue_ref).unwrap_or_default();
+
     template
         .replace("{attempt}", &session.id.to_string())
         .replace("{project}", &session.project_name)
@@ -2595,6 +2594,57 @@ fn build_session_system_prompt(
         .replace("{branch}", &session.branch_name)
         .replace("{report_path}", report_path)
         .replace("{issue}", &session.issue_ref)
+        .replace("{issue_id}", &issue_id)
+}
+
+fn resolve_agent_command_args(
+    agent_command: &[String],
+    issue_ref: &str,
+    system_prompt: &str,
+    report_path: &str,
+) -> Vec<String> {
+    let issue_id = extract_issue_id(issue_ref).unwrap_or_default();
+
+    agent_command
+        .iter()
+        .map(|arg| {
+            arg.replace("{issue}", issue_ref)
+                .replace("{issue_id}", &issue_id)
+                .replace("{system_prompt}", system_prompt)
+                .replace("{report_path}", report_path)
+        })
+        .collect()
+}
+
+fn extract_issue_id(issue_ref: &str) -> Option<String> {
+    issue_ref.split_whitespace().find_map(|token| {
+        let candidate = token.trim_matches(|c: char| {
+            matches!(
+                c,
+                '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '"' | '\'' | '.' | ',' | ';' | ':'
+            )
+        });
+        if is_issue_id_candidate(candidate) {
+            Some(candidate.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn is_issue_id_candidate(candidate: &str) -> bool {
+    let Some((prefix, suffix)) = candidate.split_once('-') else {
+        return false;
+    };
+    if prefix.is_empty() || suffix.is_empty() || suffix.contains('-') {
+        return false;
+    }
+
+    prefix.chars().any(|c| c.is_ascii_alphabetic())
+        && prefix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && suffix.chars().all(|c| c.is_ascii_digit())
 }
 
 fn deregister_session_pid(session_pids: &Arc<Mutex<HashMap<i64, u32>>>, session_id: i64) {
@@ -3543,6 +3593,31 @@ mod tests {
         };
         let name = generate_task_name(&ctx);
         assert_eq!(name, "demo-proj-test issue");
+    }
+
+    #[test]
+    fn extract_issue_id_finds_ticket_with_suffix_punctuation() {
+        let issue = "Please fix AJAX-267: apply the ownership filter";
+        assert_eq!(extract_issue_id(issue), Some("AJAX-267".to_string()));
+    }
+
+    #[test]
+    fn extract_issue_id_returns_none_when_no_ticket_present() {
+        let issue = "fix the login bug";
+        assert_eq!(extract_issue_id(issue), None);
+    }
+
+    #[test]
+    fn resolve_agent_command_args_replaces_issue_id_inside_larger_string() {
+        let args = vec![
+            "echo".to_string(),
+            "foo_{issue_id}".to_string(),
+            "{issue_id}".to_string(),
+        ];
+        let resolved =
+            resolve_agent_command_args(&args, "AJAX-267 fix timeout handling", "system", "/tmp/r");
+        assert_eq!(resolved[1], "foo_AJAX-267");
+        assert_eq!(resolved[2], "AJAX-267");
     }
 
     #[test]

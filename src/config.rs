@@ -312,8 +312,8 @@ fn resolve_project_orchestrator_system_prompt(
 /// Returns the effective agent command for a project. Checks project-level
 /// .work/config.toml first, then global per-project config, then global
 /// orchestrator config (inline, then named default). Returns a vec of
-/// [binary, args...] with placeholders `{issue}`, `{system_prompt}`, and
-/// `{report_path}` to be replaced at runtime.
+/// [binary, args...] with placeholders `{issue}`, `{issue_id}`,
+/// `{system_prompt}`, and `{report_path}` to be replaced at runtime.
 pub fn effective_agent_command(
     global_config: &Config,
     project_name: &str,
