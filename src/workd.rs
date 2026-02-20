@@ -2255,7 +2255,7 @@ struct PlannedSession {
     issue_ref: String,
     branch_name: String,
     base_sha: String,
-    agent_command: Vec<String>,
+    agent_command: config::AgentCommand,
     task_path: Option<String>,
 }
 
@@ -2348,8 +2348,8 @@ fn query_planned_sessions(logger: &Logger) -> Result<Vec<PlannedSession>, CliErr
     let rows = stmt
         .query_map([], |row| {
             let cmd_json: String = row.get(6)?;
-            let agent_command: Vec<String> =
-                serde_json::from_str(&cmd_json).unwrap_or_else(|_| vec![cmd_json]);
+            let agent_command: config::AgentCommand = serde_json::from_str(&cmd_json)
+                .unwrap_or_else(|_| config::AgentCommand::Args(vec![cmd_json]));
             Ok(PlannedSession {
                 id: row.get(0)?,
                 project_path: row.get(1)?,
@@ -2412,23 +2412,51 @@ async fn run_agent_session(
         .to_string();
     let system_prompt = build_session_system_prompt(&session, &task_path, &report_path);
 
-    // Build the command with placeholder replacement.
-    if session.agent_command.is_empty() {
-        logger.error(format!("session {session_id} has empty agent command"));
-        let _ = update_session_status(session_id, "failed");
-        return;
-    }
+    // Ensure .work directory exists in the worktree.
+    let work_dir = Path::new(&task_path).join(".work");
+    let _ = std::fs::create_dir_all(&work_dir);
 
-    let resolved_args = resolve_agent_command_args(
+    // Build the command with placeholder replacement.
+    let resolved_command = resolve_agent_command(
         &session.agent_command,
         &session.issue_ref,
         &system_prompt,
         &report_path,
     );
-
-    // Ensure .work directory exists in the worktree.
-    let work_dir = Path::new(&task_path).join(".work");
-    let _ = std::fs::create_dir_all(&work_dir);
+    let (program, args, temp_script_path) = match resolved_command {
+        ResolvedAgentCommand::Args(args) => {
+            if args.is_empty() {
+                logger.error(format!("session {session_id} has empty agent command"));
+                let _ = update_session_status(session_id, "failed");
+                return;
+            }
+            (args[0].clone(), args[1..].to_vec(), None)
+        }
+        ResolvedAgentCommand::Script(script) => {
+            if script.trim().is_empty() {
+                logger.error(format!(
+                    "session {session_id} has empty agent command script"
+                ));
+                let _ = update_session_status(session_id, "failed");
+                return;
+            }
+            let script_path = match write_agent_command_script(&work_dir, session_id, &script) {
+                Ok(path) => path,
+                Err(e) => {
+                    logger.error(format!(
+                        "failed to write agent command script for session {session_id}: {e}"
+                    ));
+                    let _ = update_session_status(session_id, "failed");
+                    return;
+                }
+            };
+            (
+                script_path.to_string_lossy().to_string(),
+                Vec::new(),
+                Some(script_path),
+            )
+        }
+    };
 
     // Open a single combined log file for agent stdout and stderr.
     let output_path = work_dir.join("session-output.log");
@@ -2453,26 +2481,34 @@ async fn run_agent_session(
         }
     };
 
+    let issue_id = extract_issue_id(&session.issue_ref).unwrap_or_default();
+
     // Spawn the agent command directly (no shell).
-    let mut child = match tokio::process::Command::new(&resolved_args[0])
-        .args(&resolved_args[1..])
+    let mut command = tokio::process::Command::new(&program);
+    command
+        .args(&args)
         .current_dir(&task_path)
         .stdin(std::process::Stdio::null())
         .stdout(output_file)
         .stderr(stderr_file)
         .env("WORK_SESSION_ID", session_id.to_string())
         .env("WORK_SESSION_ISSUE", &session.issue_ref)
+        .env("WORK_SESSION_ISSUE_ID", &issue_id)
+        .env("WORK_SESSION_SYSTEM_PROMPT", &system_prompt)
         .env("WORK_SESSION_WORKTREE", &task_path)
         .env("WORK_SESSION_PROJECT", &session.project_name)
         .env("WORK_SESSION_BASE_SHA", &session.base_sha)
-        .env("WORK_SESSION_REPORT_PATH", &report_path)
-        .spawn()
-    {
+        .env("WORK_SESSION_REPORT_PATH", &report_path);
+
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
             logger.error(format!(
                 "failed to spawn agent for session {session_id}: {e}"
             ));
+            if let Some(path) = &temp_script_path {
+                let _ = std::fs::remove_file(path);
+            }
             let _ = update_session_status(session_id, "failed");
             return;
         }
@@ -2498,6 +2534,9 @@ async fn run_agent_session(
                     ));
                     let _ = update_session_status(session_id, "failed");
                     deregister_session_pid(session_pids, session_id);
+                    if let Some(path) = &temp_script_path {
+                        let _ = std::fs::remove_file(path);
+                    }
                     return;
                 }
             }
@@ -2507,12 +2546,18 @@ async fn run_agent_session(
             let _ = child.kill().await;
             let _ = update_session_status(session_id, "planned");
             deregister_session_pid(session_pids, session_id);
+            if let Some(path) = &temp_script_path {
+                let _ = std::fs::remove_file(path);
+            }
             return;
         }
     };
 
     // Deregister PID.
     deregister_session_pid(session_pids, session_id);
+    if let Some(path) = &temp_script_path {
+        let _ = std::fs::remove_file(path);
+    }
 
     logger.info(format!(
         "agent for session {session_id} exited with code {exit_code}"
@@ -2597,23 +2642,76 @@ fn build_session_system_prompt(
         .replace("{issue_id}", &issue_id)
 }
 
+enum ResolvedAgentCommand {
+    Args(Vec<String>),
+    Script(String),
+}
+
+fn resolve_agent_command(
+    agent_command: &config::AgentCommand,
+    issue_ref: &str,
+    system_prompt: &str,
+    report_path: &str,
+) -> ResolvedAgentCommand {
+    match agent_command {
+        config::AgentCommand::Args(args) => ResolvedAgentCommand::Args(resolve_agent_command_args(
+            args,
+            issue_ref,
+            system_prompt,
+            report_path,
+        )),
+        config::AgentCommand::Script(script) => ResolvedAgentCommand::Script(
+            resolve_agent_command_template(script, issue_ref, system_prompt, report_path),
+        ),
+    }
+}
+
+fn resolve_agent_command_template(
+    template: &str,
+    issue_ref: &str,
+    system_prompt: &str,
+    report_path: &str,
+) -> String {
+    let issue_id = extract_issue_id(issue_ref).unwrap_or_default();
+
+    template
+        .replace("{issue}", issue_ref)
+        .replace("{issue_id}", &issue_id)
+        .replace("{system_prompt}", system_prompt)
+        .replace("{report_path}", report_path)
+}
+
 fn resolve_agent_command_args(
     agent_command: &[String],
     issue_ref: &str,
     system_prompt: &str,
     report_path: &str,
 ) -> Vec<String> {
-    let issue_id = extract_issue_id(issue_ref).unwrap_or_default();
-
     agent_command
         .iter()
-        .map(|arg| {
-            arg.replace("{issue}", issue_ref)
-                .replace("{issue_id}", &issue_id)
-                .replace("{system_prompt}", system_prompt)
-                .replace("{report_path}", report_path)
-        })
+        .map(|arg| resolve_agent_command_template(arg, issue_ref, system_prompt, report_path))
         .collect()
+}
+
+fn write_agent_command_script(
+    work_dir: &Path,
+    session_id: i64,
+    script: &str,
+) -> Result<PathBuf, CliError> {
+    let mut rng = rand::thread_rng();
+    let suffix: u64 = rng.r#gen();
+    let path = work_dir.join(format!("agent-command-{session_id}-{suffix:016x}"));
+    fs::write(&path, script)
+        .map_err(|e| CliError::with_source("failed to write script file", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| CliError::with_source("failed to set script permissions", e))?;
+    }
+
+    Ok(path)
 }
 
 fn extract_issue_id(issue_ref: &str) -> Option<String> {
@@ -3618,6 +3716,26 @@ mod tests {
             resolve_agent_command_args(&args, "AJAX-267 fix timeout handling", "system", "/tmp/r");
         assert_eq!(resolved[1], "foo_AJAX-267");
         assert_eq!(resolved[2], "AJAX-267");
+    }
+
+    #[test]
+    fn resolve_agent_command_script_replaces_placeholders() {
+        let command = config::AgentCommand::Script(
+            "#!/usr/bin/env fish\necho \"{issue_id} {report_path}\"\n".to_string(),
+        );
+        let resolved = resolve_agent_command(
+            &command,
+            "AJAX-267 fix timeout handling",
+            "system prompt",
+            "/tmp/report.md",
+        );
+
+        match resolved {
+            ResolvedAgentCommand::Script(script) => {
+                assert!(script.contains("AJAX-267 /tmp/report.md"));
+            }
+            ResolvedAgentCommand::Args(_) => panic!("expected Script variant"),
+        }
     }
 
     #[test]
