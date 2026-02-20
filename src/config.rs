@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
 use crate::paths;
@@ -101,12 +101,21 @@ pub struct HooksConfig {
     pub new_after: Option<String>,
 }
 
+/// Agent command configuration. Supports either argv-style commands
+/// (`["binary", "arg1", ...]`) or a script body that is executed directly.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum AgentCommand {
+    Args(Vec<String>),
+    Script(String),
+}
+
 /// A named orchestrator definition. Lives under `[orchestrators.<name>]` in the
 /// global config. Contains only the agent-level settings (command and prompt).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct OrchestratorDefinition {
     #[serde(rename = "agent-command")]
-    pub agent_command: Option<Vec<String>>,
+    pub agent_command: Option<AgentCommand>,
     #[serde(rename = "system-prompt")]
     pub system_prompt: Option<String>,
 }
@@ -130,7 +139,7 @@ pub struct OrchestratorConfig {
     /// Name of the default orchestrator from `[orchestrators]`.
     pub default: Option<String>,
     #[serde(rename = "agent-command")]
-    pub agent_command: Option<Vec<String>>,
+    pub agent_command: Option<AgentCommand>,
     #[serde(rename = "system-prompt")]
     pub system_prompt: Option<String>,
     #[serde(rename = "max-agents-in-flight")]
@@ -270,7 +279,7 @@ fn resolve_named_orchestrator<'a>(
 fn resolve_project_orchestrator_agent_command(
     global_config: &Config,
     orch: &ProjectOrchestrator,
-) -> Option<Vec<String>> {
+) -> Option<AgentCommand> {
     match orch {
         ProjectOrchestrator::Name(name) => {
             resolve_named_orchestrator(global_config, name).and_then(|d| d.agent_command.clone())
@@ -311,14 +320,15 @@ fn resolve_project_orchestrator_system_prompt(
 
 /// Returns the effective agent command for a project. Checks project-level
 /// .work/config.toml first, then global per-project config, then global
-/// orchestrator config (inline, then named default). Returns a vec of
-/// [binary, args...] with placeholders `{issue}`, `{issue_id}`,
-/// `{system_prompt}`, and `{report_path}` to be replaced at runtime.
+/// orchestrator config (inline, then named default). Returns either argv-style
+/// command args (`["binary", "arg1", ...]`) or a script body. Placeholders
+/// `{issue}`, `{issue_id}`, `{system_prompt}`, and `{report_path}` are
+/// replaced at runtime.
 pub fn effective_agent_command(
     global_config: &Config,
     project_name: &str,
     project_path: &str,
-) -> Vec<String> {
+) -> AgentCommand {
     // Project-level .work/config.toml takes priority.
     if let Ok(project_cfg) = load_project_config(project_path)
         && let Some(ref orch) = project_cfg.orchestrator
@@ -349,10 +359,12 @@ pub fn effective_agent_command(
         }
     }
 
-    DEFAULT_AGENT_COMMAND
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    AgentCommand::Args(
+        DEFAULT_AGENT_COMMAND
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )
 }
 
 /// Returns the effective system prompt for a project. Checks project-level
@@ -687,15 +699,42 @@ system-prompt = "You are Codex."
 
         let claude = &orchestrators["claude"];
         assert_eq!(
-            claude.agent_command.as_deref().unwrap(),
-            &["claude", "-p", "{issue}"]
+            claude.agent_command.as_ref(),
+            Some(&AgentCommand::Args(vec![
+                "claude".to_string(),
+                "-p".to_string(),
+                "{issue}".to_string()
+            ]))
         );
         assert_eq!(claude.system_prompt.as_deref().unwrap(), "You are Claude.");
 
         let codex = &orchestrators["codex"];
         assert_eq!(
-            codex.agent_command.as_deref().unwrap(),
-            &["codex", "exec", "{issue}"]
+            codex.agent_command.as_ref(),
+            Some(&AgentCommand::Args(vec![
+                "codex".to_string(),
+                "exec".to_string(),
+                "{issue}".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn deserialize_script_agent_command() {
+        let toml_str = r#"
+[orchestrator]
+agent-command = """
+#!/usr/bin/env fish
+echo "$WORK_SESSION_ISSUE"
+"""
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let orch = config.orchestrator.unwrap();
+        assert_eq!(
+            orch.agent_command,
+            Some(AgentCommand::Script(
+                "#!/usr/bin/env fish\necho \"$WORK_SESSION_ISSUE\"\n".to_string()
+            ))
         );
     }
 
@@ -740,8 +779,11 @@ agent-command = ["custom", "{issue}"]
         match project.orchestrator.as_ref().unwrap() {
             ProjectOrchestrator::Inline(cfg) => {
                 assert_eq!(
-                    cfg.agent_command.as_deref().unwrap(),
-                    &["custom", "{issue}"]
+                    cfg.agent_command.as_ref(),
+                    Some(&AgentCommand::Args(vec![
+                        "custom".to_string(),
+                        "{issue}".to_string()
+                    ]))
                 );
             }
             other => panic!("expected Inline variant, got {:?}", other),
@@ -754,7 +796,10 @@ agent-command = ["custom", "{issue}"]
             orchestrators: Some(HashMap::from([(
                 "codex".to_string(),
                 OrchestratorDefinition {
-                    agent_command: Some(vec!["codex".to_string(), "exec".to_string()]),
+                    agent_command: Some(AgentCommand::Args(vec![
+                        "codex".to_string(),
+                        "exec".to_string(),
+                    ])),
                     system_prompt: None,
                 },
             )])),
@@ -769,7 +814,10 @@ agent-command = ["custom", "{issue}"]
         };
         // Use a non-existent project path so project-level config is skipped.
         let cmd = effective_agent_command(&config, "my-project", "/nonexistent");
-        assert_eq!(cmd, vec!["codex", "exec"]);
+        assert_eq!(
+            cmd,
+            AgentCommand::Args(vec!["codex".to_string(), "exec".to_string()])
+        );
     }
 
     #[test]
@@ -778,7 +826,10 @@ agent-command = ["custom", "{issue}"]
             orchestrators: Some(HashMap::from([(
                 "claude".to_string(),
                 OrchestratorDefinition {
-                    agent_command: Some(vec!["claude".to_string(), "-p".to_string()]),
+                    agent_command: Some(AgentCommand::Args(vec![
+                        "claude".to_string(),
+                        "-p".to_string(),
+                    ])),
                     system_prompt: None,
                 },
             )])),
@@ -792,7 +843,10 @@ agent-command = ["custom", "{issue}"]
             ..Config::default()
         };
         let cmd = effective_agent_command(&config, "other-project", "/nonexistent");
-        assert_eq!(cmd, vec!["claude", "-p"]);
+        assert_eq!(
+            cmd,
+            AgentCommand::Args(vec!["claude".to_string(), "-p".to_string()])
+        );
     }
 
     #[test]
@@ -801,13 +855,13 @@ agent-command = ["custom", "{issue}"]
             orchestrators: Some(HashMap::from([(
                 "claude".to_string(),
                 OrchestratorDefinition {
-                    agent_command: Some(vec!["claude".to_string()]),
+                    agent_command: Some(AgentCommand::Args(vec!["claude".to_string()])),
                     system_prompt: None,
                 },
             )])),
             orchestrator: Some(OrchestratorConfig {
                 default: Some("claude".to_string()),
-                agent_command: Some(vec!["inline-cmd".to_string()]),
+                agent_command: Some(AgentCommand::Args(vec!["inline-cmd".to_string()])),
                 system_prompt: None,
                 max_agents_in_flight: None,
                 max_sessions_per_issue: None,
@@ -815,7 +869,35 @@ agent-command = ["custom", "{issue}"]
             ..Config::default()
         };
         let cmd = effective_agent_command(&config, "other-project", "/nonexistent");
-        assert_eq!(cmd, vec!["inline-cmd"]);
+        assert_eq!(cmd, AgentCommand::Args(vec!["inline-cmd".to_string()]));
+    }
+
+    #[test]
+    fn resolve_script_agent_command_from_named_default() {
+        let config = Config {
+            orchestrators: Some(HashMap::from([(
+                "codex".to_string(),
+                OrchestratorDefinition {
+                    agent_command: Some(AgentCommand::Script(
+                        "#!/usr/bin/env fish\necho test\n".to_string(),
+                    )),
+                    system_prompt: None,
+                },
+            )])),
+            orchestrator: Some(OrchestratorConfig {
+                default: Some("codex".to_string()),
+                agent_command: None,
+                system_prompt: None,
+                max_agents_in_flight: None,
+                max_sessions_per_issue: None,
+            }),
+            ..Config::default()
+        };
+        let cmd = effective_agent_command(&config, "other-project", "/nonexistent");
+        assert_eq!(
+            cmd,
+            AgentCommand::Script("#!/usr/bin/env fish\necho test\n".to_string())
+        );
     }
 
     #[test]
@@ -937,8 +1019,11 @@ agent-command = ["custom", "{issue}"]
         match projects["backend"].orchestrator.as_ref().unwrap() {
             ProjectOrchestrator::Inline(cfg) => {
                 assert_eq!(
-                    cfg.agent_command.as_deref().unwrap(),
-                    &["custom", "{issue}"]
+                    cfg.agent_command.as_ref(),
+                    Some(&AgentCommand::Args(vec![
+                        "custom".to_string(),
+                        "{issue}".to_string()
+                    ]))
                 );
             }
             other => panic!("expected Inline, got {:?}", other),
@@ -946,23 +1031,33 @@ agent-command = ["custom", "{issue}"]
 
         // Resolve agent command for frontend → codex's command.
         let cmd = effective_agent_command(&config, "frontend", "/nonexistent");
-        assert_eq!(cmd, vec!["codex", "exec", "{issue}"]);
+        assert_eq!(
+            cmd,
+            AgentCommand::Args(vec![
+                "codex".to_string(),
+                "exec".to_string(),
+                "{issue}".to_string()
+            ])
+        );
 
         // Resolve agent command for backend → inline command.
         let cmd = effective_agent_command(&config, "backend", "/nonexistent");
-        assert_eq!(cmd, vec!["custom", "{issue}"]);
+        assert_eq!(
+            cmd,
+            AgentCommand::Args(vec!["custom".to_string(), "{issue}".to_string()])
+        );
 
         // Resolve agent command for unknown project → default (claude).
         let cmd = effective_agent_command(&config, "unknown", "/nonexistent");
         assert_eq!(
             cmd,
-            vec![
-                "claude",
-                "-p",
-                "--system-prompt",
-                "{system_prompt}",
-                "{issue}"
-            ]
+            AgentCommand::Args(vec![
+                "claude".to_string(),
+                "-p".to_string(),
+                "--system-prompt".to_string(),
+                "{system_prompt}".to_string(),
+                "{issue}".to_string()
+            ])
         );
     }
 

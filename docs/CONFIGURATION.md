@@ -516,8 +516,11 @@ default = "claude"
 
 ### `agent-command`
 
-The command template used to launch an agent session. This is an array of
-strings where the first element is the binary and the rest are arguments.
+The command template used to launch an agent session. This can be either:
+
+- An argv array (first element is the binary, remaining elements are args)
+- A script body string that is written to a temporary executable file and run
+  directly (use a shebang such as `#!/usr/bin/env fish`)
 
 Four placeholders are available and will be replaced at runtime:
 
@@ -531,19 +534,41 @@ Four placeholders are available and will be replaced at runtime:
 Placeholders can be embedded inside larger strings (for example
 `"foo_{issue_id}"`).
 
+When using script form, these environment variables are also set for the
+script process:
+
+| Variable | Value |
+|---|---|
+| `WORK_SESSION_ID` | Numeric session ID |
+| `WORK_SESSION_ISSUE` | Session issue text |
+| `WORK_SESSION_ISSUE_ID` | Extracted issue identifier (or empty) |
+| `WORK_SESSION_SYSTEM_PROMPT` | Effective system prompt |
+| `WORK_SESSION_WORKTREE` | Session worktree path |
+| `WORK_SESSION_PROJECT` | Project name |
+| `WORK_SESSION_BASE_SHA` | Base commit SHA |
+| `WORK_SESSION_REPORT_PATH` | Report output path |
+
 | | |
 |---|---|
 | **Key** | `orchestrator.agent-command` |
-| **Type** | array of strings |
+| **Type** | array of strings OR script string |
 | **Default** | `["claude", "-p", "--dangerously-skip-permissions", "--disallowedTools", "EnterPlanMode", "--system-prompt", "{system_prompt}", "{issue}"]` |
 | **Scope** | global, per-project |
 
 Can be set inline or inherited from a named orchestrator via `default`:
 
 ```toml
-# Inline (takes precedence):
+# Inline argv form (takes precedence):
 [orchestrator]
 agent-command = ["claude", "-p", "--system-prompt", "{system_prompt}", "{issue}"]
+
+# Inline script form:
+[orchestrator]
+agent-command = """
+#!/usr/bin/env fish
+codex exec --json --dangerously-bypass-approvals-and-sandbox \
+  "{system_prompt}\n\n---\n\n{issue}"
+"""
 
 # Or via named orchestrator:
 [orchestrator]
@@ -560,6 +585,13 @@ orchestrator = "codex"
 # Or inline:
 [projects.my-project.orchestrator]
 agent-command = ["custom-agent", "--prompt", "{issue}"]
+
+# Or inline script:
+# [projects.my-project.orchestrator]
+# agent-command = """
+# #!/usr/bin/env fish
+# custom-agent --prompt "{issue}" --report "{report_path}"
+# """
 ```
 
 ### `system-prompt`
@@ -659,6 +691,14 @@ work tui --interval 2
 | `HOME` | Home directory fallback when XDG vars are not set | -- |
 | `WORK_PROJECT` | Set by `task-name-command` scripts: the project name | -- |
 | `WORK_ISSUE` | Set by `task-name-command` scripts: the issue description (sessions only) | -- |
+| `WORK_SESSION_ID` | Set for agent-command execution: numeric session ID | -- |
+| `WORK_SESSION_ISSUE` | Set for agent-command execution: issue text | -- |
+| `WORK_SESSION_ISSUE_ID` | Set for agent-command execution: extracted issue identifier | -- |
+| `WORK_SESSION_SYSTEM_PROMPT` | Set for agent-command execution: effective prompt | -- |
+| `WORK_SESSION_WORKTREE` | Set for agent-command execution: worktree path | -- |
+| `WORK_SESSION_PROJECT` | Set for agent-command execution: project name | -- |
+| `WORK_SESSION_BASE_SHA` | Set for agent-command execution: base commit SHA | -- |
+| `WORK_SESSION_REPORT_PATH` | Set for agent-command execution: report path | -- |
 
 ---
 
