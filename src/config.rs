@@ -8,6 +8,8 @@ use crate::paths;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
+    /// Named orchestrator definitions, keyed by name.
+    pub orchestrators: Option<HashMap<String, OrchestratorDefinition>>,
     pub projects: Option<HashMap<String, ProjectConfig>>,
     pub daemon: Option<DaemonConfig>,
     pub orchestrator: Option<OrchestratorConfig>,
@@ -27,7 +29,7 @@ pub struct Config {
 #[derive(Debug, Default, Deserialize)]
 pub struct ProjectConfig {
     pub hooks: Option<HooksConfig>,
-    pub orchestrator: Option<OrchestratorConfig>,
+    pub orchestrator: Option<ProjectOrchestrator>,
     #[serde(rename = "pool-size")]
     pub pool_size: Option<u32>,
     #[serde(rename = "default-branch")]
@@ -99,8 +101,34 @@ pub struct HooksConfig {
     pub new_after: Option<String>,
 }
 
+/// A named orchestrator definition. Lives under `[orchestrators.<name>]` in the
+/// global config. Contains only the agent-level settings (command and prompt).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OrchestratorDefinition {
+    #[serde(rename = "agent-command")]
+    pub agent_command: Option<Vec<String>>,
+    #[serde(rename = "system-prompt")]
+    pub system_prompt: Option<String>,
+}
+
+/// Per-project orchestrator reference. Can be a name string referencing a named
+/// orchestrator (`orchestrator = "claude"`) or an inline table with orchestrator
+/// settings.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ProjectOrchestrator {
+    Inline(OrchestratorConfig),
+    Name(String),
+}
+
+/// Global orchestrator settings under `[orchestrator]`. The `default` field
+/// selects a named orchestrator from `[orchestrators]` as the baseline. Inline
+/// `agent-command` and `system-prompt` take precedence over the named
+/// orchestrator's values.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct OrchestratorConfig {
+    /// Name of the default orchestrator from `[orchestrators]`.
+    pub default: Option<String>,
     #[serde(rename = "agent-command")]
     pub agent_command: Option<Vec<String>>,
     #[serde(rename = "system-prompt")]
@@ -229,10 +257,63 @@ pub fn effective_default_branch(
     "main".to_string()
 }
 
+/// Look up a named orchestrator definition from the global `[orchestrators]` table.
+fn resolve_named_orchestrator<'a>(
+    config: &'a Config,
+    name: &str,
+) -> Option<&'a OrchestratorDefinition> {
+    config.orchestrators.as_ref()?.get(name)
+}
+
+/// Resolve agent-command from a `ProjectOrchestrator` value, looking up named
+/// orchestrators in the global config when needed.
+fn resolve_project_orchestrator_agent_command(
+    global_config: &Config,
+    orch: &ProjectOrchestrator,
+) -> Option<Vec<String>> {
+    match orch {
+        ProjectOrchestrator::Name(name) => {
+            resolve_named_orchestrator(global_config, name).and_then(|d| d.agent_command.clone())
+        }
+        ProjectOrchestrator::Inline(cfg) => {
+            // Inline agent-command takes precedence; fall back to default name.
+            if cfg.agent_command.is_some() {
+                return cfg.agent_command.clone();
+            }
+            cfg.default
+                .as_deref()
+                .and_then(|name| resolve_named_orchestrator(global_config, name))
+                .and_then(|d| d.agent_command.clone())
+        }
+    }
+}
+
+/// Resolve system-prompt from a `ProjectOrchestrator` value.
+fn resolve_project_orchestrator_system_prompt(
+    global_config: &Config,
+    orch: &ProjectOrchestrator,
+) -> Option<String> {
+    match orch {
+        ProjectOrchestrator::Name(name) => {
+            resolve_named_orchestrator(global_config, name).and_then(|d| d.system_prompt.clone())
+        }
+        ProjectOrchestrator::Inline(cfg) => {
+            if cfg.system_prompt.is_some() {
+                return cfg.system_prompt.clone();
+            }
+            cfg.default
+                .as_deref()
+                .and_then(|name| resolve_named_orchestrator(global_config, name))
+                .and_then(|d| d.system_prompt.clone())
+        }
+    }
+}
+
 /// Returns the effective agent command for a project. Checks project-level
 /// .work/config.toml first, then global per-project config, then global
-/// orchestrator config. Returns a vec of [binary, args...] with placeholders
-/// `{issue}`, `{system_prompt}`, and `{report_path}` to be replaced at runtime.
+/// orchestrator config (inline, then named default). Returns a vec of
+/// [binary, args...] with placeholders `{issue}`, `{system_prompt}`, and
+/// `{report_path}` to be replaced at runtime.
 pub fn effective_agent_command(
     global_config: &Config,
     project_name: &str,
@@ -240,32 +321,81 @@ pub fn effective_agent_command(
 ) -> Vec<String> {
     // Project-level .work/config.toml takes priority.
     if let Ok(project_cfg) = load_project_config(project_path)
-        && let Some(orch) = &project_cfg.orchestrator
-        && let Some(cmd) = &orch.agent_command
+        && let Some(ref orch) = project_cfg.orchestrator
+        && let Some(cmd) = resolve_project_orchestrator_agent_command(global_config, orch)
     {
-        return cmd.clone();
+        return cmd;
     }
 
     // Fall back to global per-project config.
     if let Some(projects) = &global_config.projects
         && let Some(project_cfg) = projects.get(project_name)
-        && let Some(orch) = &project_cfg.orchestrator
-        && let Some(cmd) = &orch.agent_command
+        && let Some(ref orch) = project_cfg.orchestrator
+        && let Some(cmd) = resolve_project_orchestrator_agent_command(global_config, orch)
     {
-        return cmd.clone();
+        return cmd;
     }
 
-    // Fall back to global orchestrator config.
-    if let Some(orch) = &global_config.orchestrator
-        && let Some(cmd) = &orch.agent_command
-    {
-        return cmd.clone();
+    // Fall back to global orchestrator config: inline first, then default name.
+    if let Some(ref orch) = global_config.orchestrator {
+        if let Some(ref cmd) = orch.agent_command {
+            return cmd.clone();
+        }
+        if let Some(ref default_name) = orch.default
+            && let Some(def) = resolve_named_orchestrator(global_config, default_name)
+            && let Some(ref cmd) = def.agent_command
+        {
+            return cmd.clone();
+        }
     }
 
     DEFAULT_AGENT_COMMAND
         .iter()
         .map(|s| s.to_string())
         .collect()
+}
+
+/// Returns the effective system prompt for a project. Checks project-level
+/// .work/config.toml first, then global per-project config, then global
+/// orchestrator config (inline, then named default). Returns `None` when no
+/// custom prompt is configured (callers should fall back to the built-in
+/// default).
+pub fn effective_system_prompt(
+    global_config: &Config,
+    project_name: &str,
+    project_path: &str,
+) -> Option<String> {
+    // Project-level .work/config.toml takes priority.
+    if let Ok(project_cfg) = load_project_config(project_path)
+        && let Some(ref orch) = project_cfg.orchestrator
+        && let Some(prompt) = resolve_project_orchestrator_system_prompt(global_config, orch)
+    {
+        return Some(prompt);
+    }
+
+    // Fall back to global per-project config.
+    if let Some(projects) = &global_config.projects
+        && let Some(project_cfg) = projects.get(project_name)
+        && let Some(ref orch) = project_cfg.orchestrator
+        && let Some(prompt) = resolve_project_orchestrator_system_prompt(global_config, orch)
+    {
+        return Some(prompt);
+    }
+
+    // Fall back to global orchestrator config: inline first, then default name.
+    if let Some(ref orch) = global_config.orchestrator {
+        if orch.system_prompt.is_some() {
+            return orch.system_prompt.clone();
+        }
+        if let Some(ref default_name) = orch.default
+            && let Some(def) = resolve_named_orchestrator(global_config, default_name)
+            && def.system_prompt.is_some()
+        {
+            return def.system_prompt.clone();
+        }
+    }
+
+    None
 }
 
 /// Returns the effective max agents in flight. Checks global orchestrator
@@ -536,5 +666,315 @@ task-name-command = "echo my-custom-name"
             project.task_name_command.as_deref(),
             Some("echo my-custom-name")
         );
+    }
+
+    // -- Named orchestrator tests --
+
+    #[test]
+    fn deserialize_named_orchestrators() {
+        let toml_str = r#"
+[orchestrators.claude]
+agent-command = ["claude", "-p", "{issue}"]
+system-prompt = "You are Claude."
+
+[orchestrators.codex]
+agent-command = ["codex", "exec", "{issue}"]
+system-prompt = "You are Codex."
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let orchestrators = config.orchestrators.unwrap();
+        assert_eq!(orchestrators.len(), 2);
+
+        let claude = &orchestrators["claude"];
+        assert_eq!(
+            claude.agent_command.as_deref().unwrap(),
+            &["claude", "-p", "{issue}"]
+        );
+        assert_eq!(claude.system_prompt.as_deref().unwrap(), "You are Claude.");
+
+        let codex = &orchestrators["codex"];
+        assert_eq!(
+            codex.agent_command.as_deref().unwrap(),
+            &["codex", "exec", "{issue}"]
+        );
+    }
+
+    #[test]
+    fn deserialize_orchestrator_default_name() {
+        let toml_str = r#"
+[orchestrator]
+default = "claude"
+max-agents-in-flight = 8
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let orch = config.orchestrator.unwrap();
+        assert_eq!(orch.default.as_deref(), Some("claude"));
+        assert_eq!(orch.max_agents_in_flight, Some(8));
+        assert!(orch.agent_command.is_none());
+    }
+
+    #[test]
+    fn deserialize_project_orchestrator_as_name() {
+        let toml_str = r#"
+[projects.my-project]
+orchestrator = "codex"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let projects = config.projects.unwrap();
+        let project = &projects["my-project"];
+        match project.orchestrator.as_ref().unwrap() {
+            ProjectOrchestrator::Name(name) => assert_eq!(name, "codex"),
+            other => panic!("expected Name variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deserialize_project_orchestrator_as_inline_table() {
+        let toml_str = r#"
+[projects.my-project.orchestrator]
+agent-command = ["custom", "{issue}"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let projects = config.projects.unwrap();
+        let project = &projects["my-project"];
+        match project.orchestrator.as_ref().unwrap() {
+            ProjectOrchestrator::Inline(cfg) => {
+                assert_eq!(
+                    cfg.agent_command.as_deref().unwrap(),
+                    &["custom", "{issue}"]
+                );
+            }
+            other => panic!("expected Inline variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn resolve_agent_command_from_named_orchestrator_via_project() {
+        let config = Config {
+            orchestrators: Some(HashMap::from([(
+                "codex".to_string(),
+                OrchestratorDefinition {
+                    agent_command: Some(vec!["codex".to_string(), "exec".to_string()]),
+                    system_prompt: None,
+                },
+            )])),
+            projects: Some(HashMap::from([(
+                "my-project".to_string(),
+                ProjectConfig {
+                    orchestrator: Some(ProjectOrchestrator::Name("codex".to_string())),
+                    ..ProjectConfig::default()
+                },
+            )])),
+            ..Config::default()
+        };
+        // Use a non-existent project path so project-level config is skipped.
+        let cmd = effective_agent_command(&config, "my-project", "/nonexistent");
+        assert_eq!(cmd, vec!["codex", "exec"]);
+    }
+
+    #[test]
+    fn resolve_agent_command_from_named_default() {
+        let config = Config {
+            orchestrators: Some(HashMap::from([(
+                "claude".to_string(),
+                OrchestratorDefinition {
+                    agent_command: Some(vec!["claude".to_string(), "-p".to_string()]),
+                    system_prompt: None,
+                },
+            )])),
+            orchestrator: Some(OrchestratorConfig {
+                default: Some("claude".to_string()),
+                agent_command: None,
+                system_prompt: None,
+                max_agents_in_flight: None,
+                max_sessions_per_issue: None,
+            }),
+            ..Config::default()
+        };
+        let cmd = effective_agent_command(&config, "other-project", "/nonexistent");
+        assert_eq!(cmd, vec!["claude", "-p"]);
+    }
+
+    #[test]
+    fn inline_agent_command_overrides_named_default() {
+        let config = Config {
+            orchestrators: Some(HashMap::from([(
+                "claude".to_string(),
+                OrchestratorDefinition {
+                    agent_command: Some(vec!["claude".to_string()]),
+                    system_prompt: None,
+                },
+            )])),
+            orchestrator: Some(OrchestratorConfig {
+                default: Some("claude".to_string()),
+                agent_command: Some(vec!["inline-cmd".to_string()]),
+                system_prompt: None,
+                max_agents_in_flight: None,
+                max_sessions_per_issue: None,
+            }),
+            ..Config::default()
+        };
+        let cmd = effective_agent_command(&config, "other-project", "/nonexistent");
+        assert_eq!(cmd, vec!["inline-cmd"]);
+    }
+
+    #[test]
+    fn resolve_system_prompt_from_named_orchestrator_via_project() {
+        let config = Config {
+            orchestrators: Some(HashMap::from([(
+                "codex".to_string(),
+                OrchestratorDefinition {
+                    agent_command: None,
+                    system_prompt: Some("Codex prompt".to_string()),
+                },
+            )])),
+            projects: Some(HashMap::from([(
+                "my-project".to_string(),
+                ProjectConfig {
+                    orchestrator: Some(ProjectOrchestrator::Name("codex".to_string())),
+                    ..ProjectConfig::default()
+                },
+            )])),
+            ..Config::default()
+        };
+        let prompt = effective_system_prompt(&config, "my-project", "/nonexistent");
+        assert_eq!(prompt.as_deref(), Some("Codex prompt"));
+    }
+
+    #[test]
+    fn resolve_system_prompt_from_named_default() {
+        let config = Config {
+            orchestrators: Some(HashMap::from([(
+                "claude".to_string(),
+                OrchestratorDefinition {
+                    agent_command: None,
+                    system_prompt: Some("Claude prompt".to_string()),
+                },
+            )])),
+            orchestrator: Some(OrchestratorConfig {
+                default: Some("claude".to_string()),
+                agent_command: None,
+                system_prompt: None,
+                max_agents_in_flight: None,
+                max_sessions_per_issue: None,
+            }),
+            ..Config::default()
+        };
+        let prompt = effective_system_prompt(&config, "other", "/nonexistent");
+        assert_eq!(prompt.as_deref(), Some("Claude prompt"));
+    }
+
+    #[test]
+    fn inline_system_prompt_overrides_named_default() {
+        let config = Config {
+            orchestrators: Some(HashMap::from([(
+                "claude".to_string(),
+                OrchestratorDefinition {
+                    agent_command: None,
+                    system_prompt: Some("Named prompt".to_string()),
+                },
+            )])),
+            orchestrator: Some(OrchestratorConfig {
+                default: Some("claude".to_string()),
+                agent_command: None,
+                system_prompt: Some("Inline prompt".to_string()),
+                max_agents_in_flight: None,
+                max_sessions_per_issue: None,
+            }),
+            ..Config::default()
+        };
+        let prompt = effective_system_prompt(&config, "other", "/nonexistent");
+        assert_eq!(prompt.as_deref(), Some("Inline prompt"));
+    }
+
+    #[test]
+    fn system_prompt_returns_none_when_no_config() {
+        let config = Config::default();
+        let prompt = effective_system_prompt(&config, "project", "/nonexistent");
+        assert!(prompt.is_none());
+    }
+
+    #[test]
+    fn deserialize_full_named_orchestrator_config() {
+        let toml_str = r#"
+[orchestrators.claude]
+agent-command = ["claude", "-p", "--system-prompt", "{system_prompt}", "{issue}"]
+system-prompt = "You are Claude."
+
+[orchestrators.codex]
+agent-command = ["codex", "exec", "{issue}"]
+
+[orchestrator]
+default = "claude"
+max-agents-in-flight = 6
+max-sessions-per-issue = 5
+
+[projects.frontend]
+orchestrator = "codex"
+
+[projects.backend.orchestrator]
+agent-command = ["custom", "{issue}"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+
+        // Named orchestrators parsed correctly.
+        let orchestrators = config.orchestrators.as_ref().unwrap();
+        assert_eq!(orchestrators.len(), 2);
+
+        // Global default is "claude".
+        let orch = config.orchestrator.as_ref().unwrap();
+        assert_eq!(orch.default.as_deref(), Some("claude"));
+        assert_eq!(orch.max_agents_in_flight, Some(6));
+
+        // Frontend project references by name.
+        let projects = config.projects.as_ref().unwrap();
+        match projects["frontend"].orchestrator.as_ref().unwrap() {
+            ProjectOrchestrator::Name(name) => assert_eq!(name, "codex"),
+            other => panic!("expected Name, got {:?}", other),
+        }
+
+        // Backend project uses inline config.
+        match projects["backend"].orchestrator.as_ref().unwrap() {
+            ProjectOrchestrator::Inline(cfg) => {
+                assert_eq!(
+                    cfg.agent_command.as_deref().unwrap(),
+                    &["custom", "{issue}"]
+                );
+            }
+            other => panic!("expected Inline, got {:?}", other),
+        }
+
+        // Resolve agent command for frontend → codex's command.
+        let cmd = effective_agent_command(&config, "frontend", "/nonexistent");
+        assert_eq!(cmd, vec!["codex", "exec", "{issue}"]);
+
+        // Resolve agent command for backend → inline command.
+        let cmd = effective_agent_command(&config, "backend", "/nonexistent");
+        assert_eq!(cmd, vec!["custom", "{issue}"]);
+
+        // Resolve agent command for unknown project → default (claude).
+        let cmd = effective_agent_command(&config, "unknown", "/nonexistent");
+        assert_eq!(
+            cmd,
+            vec![
+                "claude",
+                "-p",
+                "--system-prompt",
+                "{system_prompt}",
+                "{issue}"
+            ]
+        );
+    }
+
+    #[test]
+    fn project_orchestrator_name_in_project_level_config() {
+        // Ensure ProjectConfig can be deserialized with orchestrator = "name"
+        // (as would appear in .work/config.toml).
+        let toml_str = r#"orchestrator = "codex""#;
+        let config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        match config.orchestrator.as_ref().unwrap() {
+            ProjectOrchestrator::Name(name) => assert_eq!(name, "codex"),
+            other => panic!("expected Name variant, got {:?}", other),
+        }
     }
 }
