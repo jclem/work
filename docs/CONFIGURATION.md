@@ -27,7 +27,9 @@ defaults.
   - [pool-pull-interval](#pool-pull-interval)
   - [pr-cleanup-enabled](#pr-cleanup-enabled)
   - [pr-cleanup-interval](#pr-cleanup-interval)
+- [Named orchestrators](#named-orchestrators)
 - [Orchestrator settings](#orchestrator-settings)
+  - [default](#default)
   - [agent-command](#agent-command)
   - [system-prompt](#system-prompt)
   - [max-agents-in-flight](#max-agents-in-flight)
@@ -428,6 +430,61 @@ pr-cleanup-interval = 600   # sweep every 10 minutes
 
 ---
 
+## Named orchestrators
+
+Named orchestrators let you define reusable orchestrator configurations under
+`[orchestrators.<name>]` in the global config. Each definition can include an
+`agent-command` and `system-prompt`. You can then reference them by name
+instead of repeating the full command everywhere.
+
+```toml
+# Define named orchestrators
+[orchestrators.claude]
+agent-command = [
+  "claude", "-p",
+  "--dangerously-skip-permissions",
+  "--system-prompt", "{system_prompt}",
+  "{issue}",
+]
+
+[orchestrators.codex]
+agent-command = [
+  "codex", "exec",
+  "--dangerously-bypass-approvals-and-sandbox",
+  "{system_prompt}\n\n---\n\n{issue}",
+]
+```
+
+Once defined, reference them by name:
+
+- **As the global default:** set `default = "claude"` under `[orchestrator]`
+- **Per-project:** set `orchestrator = "codex"` under `[projects.<name>]`
+
+```toml
+[orchestrator]
+default = "claude"       # all projects use "claude" unless overridden
+
+[projects.my-frontend]
+orchestrator = "codex"   # this project uses "codex" instead
+```
+
+### Resolution for `agent-command` and `system-prompt`
+
+When determining the effective `agent-command` or `system-prompt`, the
+following resolution order applies (first value found wins):
+
+1. **Per-project config** (`.work/config.toml` `[orchestrator]` section, or
+   `orchestrator = "<name>"` referencing a named orchestrator)
+2. **Global per-project config** (`[projects.<name>.orchestrator]` inline table,
+   or `[projects.<name>] orchestrator = "<name>"`)
+3. **Global orchestrator config** (`[orchestrator]` inline `agent-command` /
+   `system-prompt`, or the named orchestrator referenced by `default`)
+4. **Built-in defaults**
+
+Inline values always take precedence over named references at the same level.
+
+---
+
 ## Orchestrator settings
 
 The orchestrator controls how agent sessions (started with `work start`) are
@@ -438,6 +495,24 @@ under `[projects.<name>.orchestrator]` in the global config, or under
 Resolution order follows the same pattern as other settings: project-level
 `.work/config.toml` > global per-project > global orchestrator > built-in
 defaults.
+
+### `default`
+
+Name of a named orchestrator (from `[orchestrators]`) to use as the global
+default. When set, the named orchestrator's `agent-command` and
+`system-prompt` are used unless overridden by inline values.
+
+| | |
+|---|---|
+| **Key** | `orchestrator.default` |
+| **Type** | string (orchestrator name) |
+| **Default** | none |
+| **Scope** | global |
+
+```toml
+[orchestrator]
+default = "claude"
+```
 
 ### `agent-command`
 
@@ -459,21 +534,26 @@ Three placeholders are available and will be replaced at runtime:
 | **Default** | `["claude", "-p", "--dangerously-skip-permissions", "--disallowedTools", "EnterPlanMode", "--system-prompt", "{system_prompt}", "{issue}"]` |
 | **Scope** | global, per-project |
 
+Can be set inline or inherited from a named orchestrator via `default`:
+
 ```toml
+# Inline (takes precedence):
 [orchestrator]
-agent-command = [
-  "claude",
-  "-p",
-  "--dangerously-skip-permissions",
-  "--system-prompt",
-  "{system_prompt}",
-  "{issue}",
-]
+agent-command = ["claude", "-p", "--system-prompt", "{system_prompt}", "{issue}"]
+
+# Or via named orchestrator:
+[orchestrator]
+default = "claude"   # uses [orchestrators.claude].agent-command
 ```
 
-Per-project override:
+Per-project override (inline or by name):
 
 ```toml
+# By name:
+[projects.my-project]
+orchestrator = "codex"
+
+# Or inline:
 [projects.my-project.orchestrator]
 agent-command = ["custom-agent", "--prompt", "{issue}"]
 ```
@@ -628,11 +708,29 @@ default-branch = "main"
 # echo "$WORK_ISSUE" | llm -s 'Output a short kebab-case branch name. No explanation.'
 # """
 
+# ─── Named orchestrator definitions ─────────────────────────────────
+
+[orchestrators.claude]
+agent-command = [
+  "claude", "-p",
+  "--dangerously-skip-permissions",
+  "--system-prompt", "{system_prompt}",
+  "{issue}",
+]
+
+[orchestrators.codex]
+agent-command = [
+  "codex", "exec",
+  "--dangerously-bypass-approvals-and-sandbox",
+  "{system_prompt}\n\n---\n\n{issue}",
+]
+
 # ─── Per-project settings ───────────────────────────────────────────
 
 [projects.frontend]
 default-branch = "develop"
 pool-size = 3
+orchestrator = "codex"                    # use codex by name
 
 [projects.frontend.hooks]
 new-after = """
@@ -640,10 +738,6 @@ new-after = """
 npm install
 cp .env.example .env
 """
-
-[projects.frontend.orchestrator]
-agent-command = ["claude", "-p", "--dangerously-skip-permissions", "{issue}"]
-system-prompt = "You are working on a React frontend. Use TypeScript."
 
 [projects.backend]
 default-branch = "main"
@@ -669,10 +763,10 @@ pr-cleanup-interval = 300
 # ─── Orchestrator defaults ──────────────────────────────────────────
 
 [orchestrator]
+default = "claude"                        # global default orchestrator
 max-agents-in-flight = 4
 max-sessions-per-issue = 5
-# agent-command = [...]    # uncomment to override the default agent command
-# system-prompt = "..."    # uncomment to set a global system prompt
+# system-prompt = "..."                   # uncomment to set a global system prompt
 
 # ─── TUI ────────────────────────────────────────────────────────────
 
@@ -701,6 +795,10 @@ mise install
 cargo build
 """
 
-[orchestrator]
-system-prompt = "Follow the project's CLAUDE.md for coding conventions."
+# Reference a named orchestrator from the global config:
+orchestrator = "codex"
+
+# Or override inline:
+# [orchestrator]
+# system-prompt = "Follow the project's CLAUDE.md for coding conventions."
 ```

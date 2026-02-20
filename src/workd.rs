@@ -2570,10 +2570,9 @@ fn build_session_system_prompt(
     task_path: &str,
     report_path: &str,
 ) -> String {
-    let template = config::load()
-        .ok()
-        .and_then(|c| c.orchestrator)
-        .and_then(|o| o.system_prompt);
+    let template = config::load().ok().and_then(|cfg| {
+        config::effective_system_prompt(&cfg, &session.project_name, &session.project_path)
+    });
 
     let template = template.as_deref().unwrap_or(DEFAULT_SESSION_SYSTEM_PROMPT);
 
