@@ -27,7 +27,13 @@ pub fn start(args: SessionStartArgs) -> Result<(), CliError> {
         .map_err(|e| CliError::with_source("failed to canonicalize current directory", e))?;
     let cwd_str = cwd.to_string_lossy();
 
-    let resp = client::start_sessions(&issue, args.agents, args.project.as_deref(), &cwd_str)?;
+    let resp = client::start_sessions(
+        &issue,
+        args.agents,
+        args.name.as_deref(),
+        args.project.as_deref(),
+        &cwd_str,
+    )?;
 
     error::print_success(&format!(
         "Started {} session(s) for issue",

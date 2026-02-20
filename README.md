@@ -78,6 +78,7 @@ draft PR.
 
 ```bash
 work new "fix the login redirect after password reset"
+work new "fix the login redirect after password reset" --name hotfix-login-redirect
 ```
 
 For hard problems, run multiple agents in parallel and let them race:
@@ -180,6 +181,7 @@ eval "$(work completions zsh)"    # or bash, fish
 work new "fix the bug"            # Start a session (aliases: start, create)
 work new                          # Opens $EDITOR for the issue description
 work new --agents 3               # Start 3 parallel sessions
+work new "fix the bug" --name hotfix-login   # Set the task/branch name (requires --agents 1)
 work new --project my-project     # Target a specific project
 
 # List and inspect

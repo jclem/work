@@ -941,7 +941,7 @@ impl App {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
-                match client::start_sessions(&value, 1, None, &cwd) {
+                match client::start_sessions(&value, 1, None, None, &cwd) {
                     Ok(resp) => {
                         self.set_status(
                             format!("Started {} session(s)", resp.sessions.len()),

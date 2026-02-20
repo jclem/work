@@ -138,6 +138,7 @@ pub struct ClearPoolResponse {
 pub struct StartSessionsRequest {
     pub issue_ref: String,
     pub num_agents: u32,
+    pub name: Option<String>,
     pub project: Option<String>,
     pub cwd: String,
 }
@@ -1757,11 +1758,18 @@ fn start_sessions_inner(
     req: StartSessionsRequest,
     pool_notify: &Arc<Notify>,
 ) -> Result<StartSessionsResponse, CliError> {
+    let StartSessionsRequest {
+        issue_ref,
+        num_agents,
+        name,
+        project,
+        cwd,
+    } = req;
+
     let conn = db::open_database()?;
     db::prepare_schema(&conn)?;
 
-    let (project_id, project_name, project_path) =
-        detect_project(&conn, req.project.as_deref(), &req.cwd)?;
+    let (project_id, project_name, project_path) = detect_project(&conn, project.as_deref(), &cwd)?;
 
     let global_cfg = config::load()?;
     let max_per_issue = config::effective_max_sessions_per_issue(&global_cfg);
@@ -1772,12 +1780,13 @@ fn start_sessions_inner(
         config::effective_default_branch(&global_cfg, &project_name, &project_path);
     let task_name_command =
         config::effective_task_name_command(&global_cfg, &project_name, &project_path);
+    let explicit_task_name = resolve_session_task_name(name, num_agents)?;
 
-    if req.num_agents > max_per_issue {
+    if num_agents > max_per_issue {
         return Err(CliError::with_hint(
             format!(
                 "requested {} agents exceeds max-sessions-per-issue ({})",
-                req.num_agents, max_per_issue
+                num_agents, max_per_issue
             ),
             "increase [orchestrator] max-sessions-per-issue in config or reduce --agents",
         ));
@@ -1787,7 +1796,7 @@ fn start_sessions_inner(
     let max_attempt: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(attemptNo), 0) FROM sessions WHERE projectId = ?1 AND issueRef = ?2",
-            params![project_id, req.issue_ref],
+            params![project_id, &issue_ref],
             |row| row.get(0),
         )
         .map_err(|e| CliError::with_source("failed to query max attempt", e))?;
@@ -1812,12 +1821,14 @@ fn start_sessions_inner(
     let adapter = GitWorktreeAdapter;
     let mut sessions = Vec::new();
 
-    for i in 1..=req.num_agents {
+    for i in 1..=num_agents {
         let attempt_no = max_attempt + i as i64;
-        let task_name = generate_task_name(&TaskNameContext {
-            project_name: &project_name,
-            issue: Some(&req.issue_ref),
-            task_name_command: task_name_command.as_deref(),
+        let task_name = explicit_task_name.clone().unwrap_or_else(|| {
+            generate_task_name(&TaskNameContext {
+                project_name: &project_name,
+                issue: Some(&issue_ref),
+                task_name_command: task_name_command.as_deref(),
+            })
         });
         let worktree_path = paths::worktree_path(&project_name, &task_name);
 
@@ -1840,7 +1851,7 @@ fn start_sessions_inner(
         // Insert the task record.
         conn.execute(
             "INSERT INTO tasks (projectId, name, path, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![project_id, task_name, worktree_path_str, now, now],
+            params![project_id, &task_name, &worktree_path_str, now, now],
         )
         .map_err(|e| CliError::with_source("failed to create task", e))?;
         let task_id = conn.last_insert_rowid();
@@ -1851,12 +1862,12 @@ fn start_sessions_inner(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'planned', ?8, ?9)",
             params![
                 project_id,
-                req.issue_ref,
+                &issue_ref,
                 attempt_no,
                 task_id,
-                task_name,
-                base_sha,
-                agent_command_json,
+                &task_name,
+                &base_sha,
+                &agent_command_json,
                 now,
                 now,
             ],
@@ -1866,7 +1877,7 @@ fn start_sessions_inner(
 
         sessions.push(SessionInfo {
             id: session_id,
-            issue_ref: req.issue_ref.clone(),
+            issue_ref: issue_ref.clone(),
             attempt_no,
             branch_name: task_name,
             status: "planned".to_string(),
@@ -3180,6 +3191,32 @@ fn resolve_project_name(
     Ok(basename.to_string())
 }
 
+fn resolve_session_task_name(
+    explicit_name: Option<String>,
+    num_agents: u32,
+) -> Result<Option<String>, CliError> {
+    let Some(name) = explicit_name else {
+        return Ok(None);
+    };
+
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::with_hint(
+            "session name cannot be empty",
+            "pass a non-empty value to --name",
+        ));
+    }
+
+    if num_agents > 1 {
+        return Err(CliError::with_hint(
+            "--name cannot be used with multiple agents",
+            "use --agents 1 when passing --name, or omit --name to auto-generate names",
+        ));
+    }
+
+    Ok(Some(trimmed.to_string()))
+}
+
 fn map_project_insert_error(source: rusqlite::Error) -> CliError {
     match source {
         rusqlite::Error::SqliteFailure(_, Some(message)) if message.contains("projects.name") => {
@@ -3526,6 +3563,32 @@ mod tests {
     fn resolve_project_name_uses_path_basename() {
         let name = resolve_project_name("/tmp/demo", None).unwrap();
         assert_eq!(name, "demo");
+    }
+
+    #[test]
+    fn resolve_session_task_name_uses_explicit_name() {
+        let name = resolve_session_task_name(Some(" hotfix-login ".to_string()), 1).unwrap();
+        assert_eq!(name.as_deref(), Some("hotfix-login"));
+    }
+
+    #[test]
+    fn resolve_session_task_name_rejects_empty_name() {
+        let err = resolve_session_task_name(Some("   ".to_string()), 1).unwrap_err();
+        assert_eq!(err.to_string(), "session name cannot be empty");
+        assert_eq!(err.hint(), Some("pass a non-empty value to --name"));
+    }
+
+    #[test]
+    fn resolve_session_task_name_rejects_multiple_agents() {
+        let err = resolve_session_task_name(Some("hotfix-login".to_string()), 2).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--name cannot be used with multiple agents"
+        );
+        assert_eq!(
+            err.hint(),
+            Some("use --agents 1 when passing --name, or omit --name to auto-generate names")
+        );
     }
 
     #[test]
