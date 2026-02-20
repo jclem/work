@@ -153,6 +153,10 @@ pub struct SessionStartArgs {
     #[arg(long, default_value_t = 1)]
     pub agents: u32,
 
+    /// Task/branch name for the new session (requires --agents 1).
+    #[arg(short, long, value_name = "NAME")]
+    pub name: Option<String>,
+
     /// Project to run sessions in.
     #[arg(long, value_name = "NAME")]
     pub project: Option<String>,
@@ -800,6 +804,30 @@ mod tests {
         if let Command::Start(args) = cli.command {
             assert_eq!(args.issue.as_deref(), Some("my issue"));
             assert_eq!(args.agents, 3);
+        } else {
+            panic!("expected Command::Start");
+        }
+    }
+
+    #[test]
+    fn start_parses_with_name_short() {
+        let cli = Cli::try_parse_from(["work", "start", "-n", "hotfix-login"]).unwrap();
+        if let Command::Start(args) = cli.command {
+            assert_eq!(args.name.as_deref(), Some("hotfix-login"));
+            assert!(args.issue.is_none());
+        } else {
+            panic!("expected Command::Start");
+        }
+    }
+
+    #[test]
+    fn start_parses_with_name_long() {
+        let cli =
+            Cli::try_parse_from(["work", "new", "--name", "hotfix-login", "fix the login bug"])
+                .unwrap();
+        if let Command::Start(args) = cli.command {
+            assert_eq!(args.name.as_deref(), Some("hotfix-login"));
+            assert_eq!(args.issue.as_deref(), Some("fix the login bug"));
         } else {
             panic!("expected Command::Start");
         }

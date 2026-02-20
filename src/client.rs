@@ -203,6 +203,7 @@ pub fn clear_pool() -> Result<ClearPoolResponse, CliError> {
 pub fn start_sessions(
     issue_ref: &str,
     num_agents: u32,
+    name: Option<&str>,
     project: Option<&str>,
     cwd: &str,
 ) -> Result<StartSessionsResponse, CliError> {
@@ -211,6 +212,7 @@ pub fn start_sessions(
         &StartSessionsRequest {
             issue_ref: issue_ref.to_string(),
             num_agents,
+            name: name.map(|s| s.to_string()),
             project: project.map(|s| s.to_string()),
             cwd: cwd.to_string(),
         },
