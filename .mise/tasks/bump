@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+#MISE description="Bump Cargo.toml version, commit v{version}, and create a signed tag"
+#USAGE about "Bump Cargo.toml version, commit v{version}, and create a signed tag"
+#USAGE arg "<part>" help="Version part to bump" {
+#USAGE   choices "major" "minor" "patch"
+#USAGE }
+set -euo pipefail
+
+part="${usage_part?}"
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Git working tree must be clean before bumping version" >&2
+  exit 1
+fi
+
+current_version="$(
+  awk '
+    /^\[package\]/ { in_package=1; next }
+    in_package && /^\[/ { in_package=0 }
+    in_package && $0 ~ /^version[[:space:]]*=/ {
+      if (match($0, /"[^"]+"/)) {
+        print substr($0, RSTART + 1, RLENGTH - 2)
+        exit
+      }
+    }
+  ' Cargo.toml
+)"
+
+if [[ -z "$current_version" ]]; then
+  echo "Could not find package version in Cargo.toml" >&2
+  exit 1
+fi
+
+package_name="$(
+  awk '
+    /^\[package\]/ { in_package=1; next }
+    in_package && /^\[/ { in_package=0 }
+    in_package && $0 ~ /^name[[:space:]]*=/ {
+      if (match($0, /"[^"]+"/)) {
+        print substr($0, RSTART + 1, RLENGTH - 2)
+        exit
+      }
+    }
+  ' Cargo.toml
+)"
+
+if [[ -z "$package_name" ]]; then
+  echo "Could not find package name in Cargo.toml" >&2
+  exit 1
+fi
+
+if [[ ! "$current_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  echo "Unsupported version format: $current_version" >&2
+  exit 1
+fi
+
+major="${BASH_REMATCH[1]}"
+minor="${BASH_REMATCH[2]}"
+patch="${BASH_REMATCH[3]}"
+
+case "$part" in
+  major)
+    major=$((major + 1))
+    minor=0
+    patch=0
+    ;;
+  minor)
+    minor=$((minor + 1))
+    patch=0
+    ;;
+  patch)
+    patch=$((patch + 1))
+    ;;
+esac
+
+new_version="${major}.${minor}.${patch}"
+tmp_file=""
+cleanup() {
+  if [[ -n "$tmp_file" && -f "$tmp_file" ]]; then
+    rm -f "$tmp_file"
+  fi
+}
+trap cleanup EXIT
+
+tmp_file="$(mktemp "${TMPDIR:-/tmp}/cargo-toml.XXXXXX")"
+
+awk -v new_version="$new_version" '
+  /^\[package\]/ {
+    in_package=1
+    print
+    next
+  }
+  in_package && /^\[/ { in_package=0 }
+  in_package && $0 ~ /^version[[:space:]]*=/ && !updated {
+    print "version = \"" new_version "\""
+    updated=1
+    next
+  }
+  { print }
+  END {
+    if (!updated) {
+      exit 2
+    }
+  }
+' Cargo.toml > "$tmp_file"
+
+mv "$tmp_file" Cargo.toml
+tmp_file=""
+
+if [[ -f Cargo.lock ]]; then
+  tmp_file="$(mktemp "${TMPDIR:-/tmp}/cargo-lock.XXXXXX")"
+
+  awk -v pkg_name="$package_name" -v old_version="$current_version" -v new_version="$new_version" '
+    $0 == "[[package]]" {
+      in_package = 1
+      in_target_package = 0
+      print
+      next
+    }
+
+    in_package && $0 == ("name = \"" pkg_name "\"") {
+      in_target_package = 1
+      print
+      next
+    }
+
+    in_target_package && !updated && $0 == ("version = \"" old_version "\"") {
+      print "version = \"" new_version "\""
+      updated = 1
+      next
+    }
+
+    { print }
+
+    END {
+      if (!updated) {
+        exit 2
+      }
+    }
+  ' Cargo.lock > "$tmp_file"
+
+  mv "$tmp_file" Cargo.lock
+  tmp_file=""
+fi
+
+git add Cargo.toml
+if [[ -f Cargo.lock ]]; then
+  git add Cargo.lock
+fi
+git commit -m "v${new_version}"
+git tag --sign "v${new_version}" -m "Release v${new_version}"
+git push --follow-tags
+
+echo "Created commit, signed tag, and pushed with --follow-tags for v${new_version}"

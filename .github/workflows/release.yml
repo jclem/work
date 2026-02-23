@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-14
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          if [[ "${{ matrix.target }}" == aarch64* ]]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          targets: ${{ env.TARGET }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          shared-key: release-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --locked --release --target "${{ env.TARGET }}"
+
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg_dir="work-${TARGET}"
+          mkdir "$pkg_dir"
+          cp "target/${TARGET}/release/work" "$pkg_dir/work"
+          chmod +x "$pkg_dir/work"
+          tar -cJf "${pkg_dir}.tar.xz" "$pkg_dir"
+          shasum -a 256 "${pkg_dir}.tar.xz" > "${pkg_dir}.sha256"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-${{ env.TARGET }}
+          path: |
+            work-${{ env.TARGET }}.tar.xz
+            work-${{ env.TARGET }}.sha256
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksum manifest
+        run: |
+          set -euo pipefail
+          cat dist/work-*.sha256 | sort > dist/sha256.sum
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/work-*.tar.xz dist/sha256.sum --clobber
+            exit 0
+          fi
+
+          prerelease_flag=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            prerelease_flag+=(--prerelease)
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --target "${GITHUB_SHA}" \
+            --generate-notes \
+            "${prerelease_flag[@]}" \
+            dist/work-*.tar.xz \
+            dist/sha256.sum
+
+      - name: Update Homebrew tap
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA256_ARM=$(awk '{print $1}' dist/work-aarch64-apple-darwin.sha256)
+          SHA256_INTEL=$(awk '{print $1}' dist/work-x86_64-apple-darwin.sha256)
+          SHA256_LINUX_AMD64=$(awk '{print $1}' dist/work-x86_64-unknown-linux-musl.sha256)
+          SHA256_LINUX_ARM64=$(awk '{print $1}' dist/work-aarch64-unknown-linux-musl.sha256)
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/jclem/homebrew-tap.git" homebrew-tap
+          cd homebrew-tap
+
+          cat > Formula/work.rb <<RUBY
+          class Work < Formula
+            desc "A CLI for managing work"
+            homepage "https://github.com/jclem/work"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/jclem/work/releases/download/v${VERSION}/work-aarch64-apple-darwin.tar.xz"
+                sha256 "${SHA256_ARM}"
+              end
+              on_intel do
+                url "https://github.com/jclem/work/releases/download/v${VERSION}/work-x86_64-apple-darwin.tar.xz"
+                sha256 "${SHA256_INTEL}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/jclem/work/releases/download/v${VERSION}/work-aarch64-unknown-linux-musl.tar.xz"
+                sha256 "${SHA256_LINUX_ARM64}"
+              end
+              on_intel do
+                url "https://github.com/jclem/work/releases/download/v${VERSION}/work-x86_64-unknown-linux-musl.tar.xz"
+                sha256 "${SHA256_LINUX_AMD64}"
+              end
+            end
+
+            def install
+              bin.install "work"
+            end
+
+            test do
+              system bin/"work", "--version"
+            end
+          end
+          RUBY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/work.rb
+          git commit -m "Update work to ${VERSION}"
+          git push

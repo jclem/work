@@ -1,0 +1,42 @@
+use std::collections::HashMap;
+
+use crate::paths;
+
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Config {
+    pub default_environment_provider: Option<String>,
+    pub default_task_provider: Option<String>,
+    pub tasks: Option<TasksConfig>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct TasksConfig {
+    pub providers: HashMap<String, TaskProviderConfig>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum TaskProviderConfig {
+    #[serde(rename = "command")]
+    Command { command: String, args: Vec<String> },
+}
+
+impl Config {
+    pub fn get_task_provider(&self, name: &str) -> anyhow::Result<&TaskProviderConfig> {
+        self.tasks
+            .as_ref()
+            .and_then(|t| t.providers.get(name))
+            .ok_or_else(|| anyhow::anyhow!("task provider not found: {name}"))
+    }
+}
+
+pub fn load() -> anyhow::Result<Config> {
+    let path = paths::config_dir()?.join("config.toml");
+
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(toml::from_str(&contents)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) => Err(e.into()),
+    }
+}
