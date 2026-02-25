@@ -361,26 +361,66 @@ pub fn stage_task_create(
         anyhow::bail!("project not found: {project_id}");
     }
 
-    let env_id = crate::id::new_id();
     let task_id = crate::id::new_id();
     let now = now_rfc3339();
+    let mut created_new_environment = false;
 
-    tx.execute(
-        "INSERT INTO environments (id, project_id, provider, status, metadata, created_at, updated_at) VALUES (?1, ?2, ?3, 'preparing', '{}', ?4, ?5)",
-        rusqlite::params![&env_id, project_id, env_provider, &now, &now],
-    )?;
+    let env_id = {
+        let candidate_env_id: Option<String> = tx
+            .query_row(
+                "SELECT id FROM environments WHERE provider = ?1 AND project_id = ?2 AND status = 'pool' ORDER BY created_at ASC LIMIT 1",
+                rusqlite::params![env_provider, project_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(candidate_env_id) = candidate_env_id {
+            let claimed = tx.execute(
+                "UPDATE environments SET status = 'in_use', updated_at = ?1 WHERE id = ?2 AND status = 'pool'",
+                rusqlite::params![&now, &candidate_env_id],
+            )?;
+            if claimed == 1 {
+                candidate_env_id
+            } else {
+                created_new_environment = true;
+                let new_env_id = crate::id::new_id();
+                tx.execute(
+                    "INSERT INTO environments (id, project_id, provider, status, metadata, created_at, updated_at) VALUES (?1, ?2, ?3, 'preparing', '{}', ?4, ?5)",
+                    rusqlite::params![&new_env_id, project_id, env_provider, &now, &now],
+                )?;
+                new_env_id
+            }
+        } else {
+            created_new_environment = true;
+            let new_env_id = crate::id::new_id();
+            tx.execute(
+                "INSERT INTO environments (id, project_id, provider, status, metadata, created_at, updated_at) VALUES (?1, ?2, ?3, 'preparing', '{}', ?4, ?5)",
+                rusqlite::params![&new_env_id, project_id, env_provider, &now, &now],
+            )?;
+            new_env_id
+        }
+    };
 
     tx.execute(
         "INSERT INTO tasks (id, environment_id, project_id, provider, description, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
         rusqlite::params![&task_id, &env_id, project_id, task_provider, description, &now, &now],
     )?;
 
-    let payload = serde_json::json!({
-        "task_id": task_id,
-        "env_id": env_id,
-    });
-    let dedupe = format!("prepare_environment:env:{env_id}");
-    let _ = insert_job_tx(&tx, "prepare_environment", &payload, Some(&dedupe))?;
+    if created_new_environment {
+        let payload = serde_json::json!({
+            "task_id": task_id,
+            "env_id": env_id,
+        });
+        let dedupe = format!("prepare_environment:env:{env_id}");
+        let _ = insert_job_tx(&tx, "prepare_environment", &payload, Some(&dedupe))?;
+    } else {
+        let payload = serde_json::json!({
+            "task_id": task_id,
+            "env_id": env_id,
+        });
+        let dedupe = format!("claim_environment:task:{task_id}");
+        let _ = insert_job_tx(&tx, "claim_environment", &payload, Some(&dedupe))?;
+    }
 
     tx.commit()?;
     get_task(&task_id)

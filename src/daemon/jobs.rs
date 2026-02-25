@@ -150,11 +150,20 @@ fn apply_terminal_failure_side_effects(job: &db::Job) {
             }
             super::events::notify();
         }
-        "claim_environment" | "update_environment" | "remove_environment" => {
+        "claim_environment" => {
             if let Some(env_id) = job.payload["env_id"].as_str() {
                 let _ = db::update_environment_status(env_id, "failed");
-                super::events::notify();
             }
+            if let Some(task_id) = job.payload["task_id"].as_str() {
+                let _ = db::update_task_status(task_id, "failed");
+            }
+            super::events::notify();
+        }
+        "update_environment" | "remove_environment" => {
+            if let Some(env_id) = job.payload["env_id"].as_str() {
+                let _ = db::update_environment_status(env_id, "failed");
+            }
+            super::events::notify();
         }
         "remove_task" => {
             if let Some(env_id) = job.payload["env_id"].as_str() {
@@ -278,12 +287,16 @@ async fn claim_environment(job: &db::Job) -> anyhow::Result<()> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("job payload missing env_id"))?
         .to_string();
+    let task_id = job.payload["task_id"].as_str().map(|id| id.to_string());
 
     let env = match db::get_environment(&env_id) {
         Ok(env) => env,
         Err(_) => return Ok(()),
     };
     if env.status != "in_use" {
+        if task_id.is_some() {
+            anyhow::bail!("environment {env_id} is not in use");
+        }
         return Ok(());
     }
 
@@ -296,6 +309,22 @@ async fn claim_environment(job: &db::Job) -> anyhow::Result<()> {
     .await??;
 
     db::update_environment_metadata(&env_id, &new_metadata)?;
+
+    if let Some(task_id) = task_id.as_deref() {
+        let task = db::get_task(task_id)?;
+        if task.status == "pending" {
+            let dedupe = format!("run_task:task:{task_id}");
+            db::create_job_with_dedupe(
+                "run_task",
+                &serde_json::json!({
+                    "task_id": task_id,
+                    "env_id": env_id,
+                }),
+                Some(&dedupe),
+            )?;
+        }
+    }
+
     super::events::notify();
     Ok(())
 }
