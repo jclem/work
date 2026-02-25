@@ -107,9 +107,14 @@ impl DaemonClient {
         &self,
         project_id: &str,
         provider: &str,
+        claim_after_prepare: bool,
     ) -> anyhow::Result<Environment> {
-        let payload =
-            serde_json::json!({"project_id": project_id, "provider": provider}).to_string();
+        let payload = serde_json::json!({
+            "project_id": project_id,
+            "provider": provider,
+            "claim_after_prepare": claim_after_prepare
+        })
+        .to_string();
         let (status, body) = self
             .request(hyper::Method::POST, "/environments", Some(&payload))
             .await?;

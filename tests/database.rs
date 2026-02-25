@@ -1,10 +1,49 @@
 mod common;
 
 use std::time::{Duration, Instant};
+use std::{path::Path, thread};
 
 use predicates::prelude::*;
 
 use common::DaemonFixture;
+
+fn write_executable_script(path: &Path, contents: &str) {
+    std::fs::write(path, contents).unwrap();
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+}
+
+fn wait_for_env_status(d: &DaemonFixture, env_id: &str, expected_status: &str, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let env_list_out = d
+            .assert_cmd()
+            .args(["environment", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let envs: Vec<serde_json::Value> = serde_json::from_slice(&env_list_out).unwrap();
+        if let Some(env) = envs
+            .iter()
+            .find(|candidate| candidate["id"].as_str() == Some(env_id))
+            && env["status"].as_str() == Some(expected_status)
+        {
+            return;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for environment {env_id} to become {expected_status}");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
 
 // --- Initialization ---
 
@@ -461,4 +500,508 @@ command = "{}"
     assert_eq!(task_status, "failed");
     assert!(!task_env_id.is_empty());
     assert_eq!(env_status, "failed");
+}
+
+#[test]
+fn environment_create_is_fully_async_and_eventually_claims() {
+    let d = DaemonFixture::start();
+
+    let provider_script = d.work_dir.path().join("slow-env-provider.sh");
+    write_executable_script(
+        &provider_script,
+        r#"#!/bin/sh
+set -eu
+action="$1"
+case "$action" in
+  prepare)
+    sleep 0.3
+    echo '{}'
+    ;;
+  update|claim)
+    echo '{}'
+    ;;
+  remove)
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[environments.providers.slow]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("async-env-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "async-env-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let create_out = d
+        .assert_cmd()
+        .args([
+            "environment",
+            "create",
+            "async-env-proj",
+            "--provider",
+            "slow",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let env: serde_json::Value = serde_json::from_slice(&create_out).unwrap();
+    let env_id = env["id"].as_str().unwrap().to_string();
+    assert_eq!(env["status"], "preparing");
+
+    wait_for_env_status(&d, &env_id, "in_use", Duration::from_secs(8));
+}
+
+#[test]
+fn environment_update_is_queued_and_failure_happens_async() {
+    let d = DaemonFixture::start();
+
+    let provider_script = d.work_dir.path().join("failing-update-provider.sh");
+    write_executable_script(
+        &provider_script,
+        r#"#!/bin/sh
+set -eu
+action="$1"
+case "$action" in
+  prepare)
+    echo '{}'
+    ;;
+  update)
+    exit 1
+    ;;
+  claim)
+    echo '{}'
+    ;;
+  remove)
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[environments.providers.updatefail]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("update-env-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "update-env-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let prepare_out = d
+        .assert_cmd()
+        .args([
+            "environment",
+            "prepare",
+            "update-env-proj",
+            "--provider",
+            "updatefail",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let env: serde_json::Value = serde_json::from_slice(&prepare_out).unwrap();
+    let env_id = env["id"].as_str().unwrap().to_string();
+    wait_for_env_status(&d, &env_id, "pool", Duration::from_secs(8));
+
+    d.assert_cmd()
+        .args(["environment", "update", &env_id, "--format", "json"])
+        .assert()
+        .success();
+
+    wait_for_env_status(&d, &env_id, "failed", Duration::from_secs(8));
+}
+
+#[test]
+fn task_remove_keeps_task_until_environment_cleanup_succeeds() {
+    let d = DaemonFixture::start();
+    let remove_fail_flag = d.work_dir.path().join("remove-fail.flag");
+    std::fs::write(&remove_fail_flag, "1").unwrap();
+
+    let provider_script = d.work_dir.path().join("failing-remove-provider.sh");
+    write_executable_script(
+        &provider_script,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+action="$1"
+fail_flag="{}"
+case "$action" in
+  prepare|update|claim)
+    echo '{{}}'
+    ;;
+  remove)
+    if [ -f "$fail_flag" ]; then
+      exit 1
+    fi
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+            remove_fail_flag.to_string_lossy()
+        ),
+    );
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[tasks.providers.noop]
+type = "command"
+command = "sh"
+args = ["-c", "true"]
+
+[environments.providers.removefail]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("remove-task-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "remove-task-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let task_create = d
+        .assert_cmd()
+        .args([
+            "task",
+            "new",
+            "remove-failure-case",
+            "--project",
+            "remove-task-proj",
+            "--provider",
+            "noop",
+            "--env-provider",
+            "removefail",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let task: serde_json::Value = serde_json::from_slice(&task_create).unwrap();
+    let task_id = task["id"].as_str().unwrap().to_string();
+    let env_id = task["environment_id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let tasks_out = d
+            .assert_cmd()
+            .args(["task", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&tasks_out).unwrap();
+        let status = tasks
+            .iter()
+            .find(|candidate| candidate["id"].as_str() == Some(task_id.as_str()))
+            .and_then(|t| t["status"].as_str())
+            .unwrap_or_default();
+        if status == "complete" || status == "failed" {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for task completion before remove");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    d.assert_cmd()
+        .args(["task", "remove", &task_id])
+        .assert()
+        .success();
+
+    wait_for_env_status(&d, &env_id, "failed", Duration::from_secs(12));
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let tasks_out = d
+            .assert_cmd()
+            .args(["task", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&tasks_out).unwrap();
+        if tasks
+            .iter()
+            .any(|candidate| candidate["id"].as_str() == Some(task_id.as_str()))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("task was deleted even though environment removal failed");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    std::fs::remove_file(&remove_fail_flag).unwrap();
+
+    d.assert_cmd()
+        .args(["task", "remove", &task_id])
+        .assert()
+        .success();
+
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        let tasks_out = d
+            .assert_cmd()
+            .args(["task", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&tasks_out).unwrap();
+        if tasks
+            .iter()
+            .all(|candidate| candidate["id"].as_str() != Some(task_id.as_str()))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("task was not deleted after retrying removal");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn task_new_claims_pool_environment_and_task_remove_deletes_paired_environment() {
+    let d = DaemonFixture::start();
+
+    let provider_script = d.work_dir.path().join("pool-reuse-provider.sh");
+    write_executable_script(
+        &provider_script,
+        r#"#!/bin/sh
+set -eu
+action="$1"
+case "$action" in
+  prepare)
+    echo '{"worktree_path":"/tmp/fake","prepared":true}'
+    ;;
+  update|claim)
+    echo '{}'
+    ;;
+  remove)
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[tasks.providers.noop]
+type = "command"
+command = "sh"
+args = ["-c", "true"]
+
+[environments.providers.poolreuse]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("pool-reuse-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "pool-reuse-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let prepare_out = d
+        .assert_cmd()
+        .args([
+            "environment",
+            "prepare",
+            "pool-reuse-proj",
+            "--provider",
+            "poolreuse",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let prepared_env: serde_json::Value = serde_json::from_slice(&prepare_out).unwrap();
+    let pool_env_id = prepared_env["id"].as_str().unwrap().to_string();
+    wait_for_env_status(&d, &pool_env_id, "pool", Duration::from_secs(8));
+
+    let task_out = d
+        .assert_cmd()
+        .args([
+            "task",
+            "new",
+            "reuse pooled env",
+            "--project",
+            "pool-reuse-proj",
+            "--provider",
+            "noop",
+            "--env-provider",
+            "poolreuse",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let task: serde_json::Value = serde_json::from_slice(&task_out).unwrap();
+    let task_id = task["id"].as_str().unwrap().to_string();
+    let task_env_id = task["environment_id"].as_str().unwrap().to_string();
+    assert_eq!(task_env_id, pool_env_id);
+
+    wait_for_env_status(&d, &pool_env_id, "in_use", Duration::from_secs(8));
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let tasks_out = d
+            .assert_cmd()
+            .args(["task", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&tasks_out).unwrap();
+        let status = tasks
+            .iter()
+            .find(|candidate| candidate["id"].as_str() == Some(task_id.as_str()))
+            .and_then(|t| t["status"].as_str())
+            .unwrap_or_default();
+        if status == "complete" || status == "failed" {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for task completion");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    d.assert_cmd()
+        .args(["task", "remove", &task_id])
+        .assert()
+        .success();
+
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        let tasks_out = d
+            .assert_cmd()
+            .args(["task", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&tasks_out).unwrap();
+        let task_present = tasks
+            .iter()
+            .any(|candidate| candidate["id"].as_str() == Some(task_id.as_str()));
+
+        let envs_out = d
+            .assert_cmd()
+            .args(["environment", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let envs: Vec<serde_json::Value> = serde_json::from_slice(&envs_out).unwrap();
+        let env_present = envs
+            .iter()
+            .any(|candidate| candidate["id"].as_str() == Some(pool_env_id.as_str()));
+
+        if !task_present && !env_present {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for task and paired environment removal");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }

@@ -626,8 +626,9 @@ async fn run() -> anyhow::Result<()> {
                                     "--provider is required (or set environment-provider in config)"
                                 )
                             })?;
-                        let env = client.prepare_environment(&proj.id, &provider).await?;
-                        let env = client.claim_environment(&env.id).await?;
+                        let env = client
+                            .prepare_environment(&proj.id, &provider, true)
+                            .await?;
                         print_env(&env, &format)?;
                     }
                     EnvironmentCommand::Prepare {
@@ -644,7 +645,9 @@ async fn run() -> anyhow::Result<()> {
                                     "--provider is required (or set environment-provider in config)"
                                 )
                             })?;
-                        let env = client.prepare_environment(&proj.id, &provider).await?;
+                        let env = client
+                            .prepare_environment(&proj.id, &provider, false)
+                            .await?;
                         print_env(&env, &format)?;
                     }
                     EnvironmentCommand::Update { id, format } => {
