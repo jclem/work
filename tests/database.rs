@@ -45,6 +45,36 @@ fn wait_for_env_status(d: &DaemonFixture, env_id: &str, expected_status: &str, t
     }
 }
 
+fn wait_for_task_terminal_status(d: &DaemonFixture, task_id: &str, timeout: Duration) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let task_list_out = d
+            .assert_cmd()
+            .args(["task", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&task_list_out).unwrap();
+        let status = tasks
+            .iter()
+            .find(|candidate| candidate["id"].as_str() == Some(task_id))
+            .and_then(|task| task["status"].as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        if status == "complete" || status == "failed" {
+            return status;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for task {task_id} to complete");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 // --- Initialization ---
 
 #[test]
@@ -1372,4 +1402,222 @@ command = "{}"
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+#[test]
+fn environment_exec_alias_runs_provider_exec_action_and_completes_provider_commands() {
+    let d = DaemonFixture::start();
+
+    let provider_script = d.work_dir.path().join("execable-env-provider.sh");
+    write_executable_script(
+        &provider_script,
+        r#"#!/bin/sh
+set -eu
+action="$1"
+case "$action" in
+  prepare)
+    echo '{"sandbox_id":"sbx-test"}'
+    ;;
+  update|claim)
+    cat
+    ;;
+  remove)
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  commands)
+    echo '[{"name":"ssh","description":"Connect to sandbox"},{"name":"logs"}]'
+    ;;
+  exec)
+    command="$2"
+    shift 2
+    printf 'exec-action command=%s args=%s metadata=%s\n' "$command" "$*" "${WORK_ENV_METADATA:-}"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[environments.providers.execable]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("exec-env-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "exec-env-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let create_out = d
+        .assert_cmd()
+        .args([
+            "environment",
+            "create",
+            "exec-env-proj",
+            "--provider",
+            "execable",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let env: serde_json::Value = serde_json::from_slice(&create_out).unwrap();
+    let env_id = env["id"].as_str().unwrap().to_string();
+    wait_for_env_status(&d, &env_id, "in_use", Duration::from_secs(8));
+
+    let completion_out = d
+        .assert_cmd()
+        .env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", "4")
+        .args(["--", "work", "env", "x", &env_id, "s"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let completion_text = String::from_utf8(completion_out).unwrap();
+    assert!(
+        completion_text.lines().any(|line| line == "ssh"),
+        "expected env exec completion to include ssh, got: {completion_text:?}"
+    );
+
+    d.assert_cmd()
+        .args(["env", "x", &env_id, "ssh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("exec-action command=ssh"))
+        .stdout(predicate::str::contains("\"sandbox_id\":\"sbx-test\""));
+}
+
+#[test]
+fn task_exec_alias_runs_provider_exec_action_and_completes_provider_commands() {
+    let d = DaemonFixture::start();
+
+    let provider_script = d.work_dir.path().join("execable-task-env-provider.sh");
+    write_executable_script(
+        &provider_script,
+        r#"#!/bin/sh
+set -eu
+action="$1"
+case "$action" in
+  prepare)
+    echo '{"sandbox_id":"sbx-task"}'
+    ;;
+  update|claim)
+    cat
+    ;;
+  remove)
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  commands)
+    echo '["ssh","logs"]'
+    ;;
+  exec)
+    command="$2"
+    shift 2
+    printf 'exec-action command=%s args=%s metadata=%s\n' "$command" "$*" "${WORK_ENV_METADATA:-}"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[tasks.providers.noop]
+type = "command"
+command = "sh"
+args = ["-c", "true"]
+
+[environments.providers.execable]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("exec-task-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "exec-task-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let task_out = d
+        .assert_cmd()
+        .args([
+            "task",
+            "new",
+            "task exec flow",
+            "--project",
+            "exec-task-proj",
+            "--provider",
+            "noop",
+            "--env-provider",
+            "execable",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let task: serde_json::Value = serde_json::from_slice(&task_out).unwrap();
+    let task_id = task["id"].as_str().unwrap().to_string();
+
+    let _ = wait_for_task_terminal_status(&d, &task_id, Duration::from_secs(8));
+
+    let completion_out = d
+        .assert_cmd()
+        .env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", "4")
+        .args(["--", "work", "task", "x", &task_id, "s"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let completion_text = String::from_utf8(completion_out).unwrap();
+    assert!(
+        completion_text.lines().any(|line| line == "ssh"),
+        "expected task exec completion to include ssh, got: {completion_text:?}"
+    );
+
+    d.assert_cmd()
+        .args(["task", "x", &task_id, "ssh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("exec-action command=ssh"))
+        .stdout(predicate::str::contains("\"sandbox_id\":\"sbx-task\""));
 }

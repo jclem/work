@@ -134,6 +134,15 @@ impl DaemonClient {
         Ok(serde_json::from_str(&body)?)
     }
 
+    pub async fn get_environment(&self, id: &str) -> anyhow::Result<Environment> {
+        let uri = format!("/environments/{id}");
+        let (status, body) = self.request(hyper::Method::GET, &uri, None).await?;
+        if !status.is_success() {
+            anyhow::bail!("{}", extract_error(&body));
+        }
+        Ok(serde_json::from_str(&body)?)
+    }
+
     pub async fn update_environment(&self, id: &str) -> anyhow::Result<Environment> {
         let uri = format!("/environments/{id}/update");
         let (status, body) = self.request(hyper::Method::POST, &uri, None).await?;
@@ -206,6 +215,15 @@ impl DaemonClient {
 
     pub async fn list_tasks(&self) -> anyhow::Result<Vec<Task>> {
         let (status, body) = self.request(hyper::Method::GET, "/tasks", None).await?;
+        if !status.is_success() {
+            anyhow::bail!("{}", extract_error(&body));
+        }
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    pub async fn get_task(&self, id: &str) -> anyhow::Result<Task> {
+        let uri = format!("/tasks/{id}");
+        let (status, body) = self.request(hyper::Method::GET, &uri, None).await?;
         if !status.is_success() {
             anyhow::bail!("{}", extract_error(&body));
         }

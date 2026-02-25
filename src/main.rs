@@ -219,6 +219,22 @@ enum EnvironmentCommand {
         follow: bool,
     },
 
+    /// Execute a provider-defined environment command
+    #[command(alias = "x")]
+    Exec {
+        /// Environment ID
+        #[arg(add = ArgValueCompleter::new(complete_env_ids))]
+        id: String,
+
+        /// Provider command name
+        #[arg(add = ArgValueCompleter::new(complete_env_exec_commands))]
+        command: String,
+
+        /// Arguments passed to the provider command
+        #[arg(allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
+
     /// Manage environment providers
     Provider {
         #[command(subcommand)]
@@ -290,6 +306,22 @@ enum TaskCommand {
         /// Follow log output in realtime
         #[arg(short = 'f', long = "follow")]
         follow: bool,
+    },
+
+    /// Execute a provider-defined environment command for a task's environment
+    #[command(alias = "x")]
+    Exec {
+        /// Task ID
+        #[arg(add = ArgValueCompleter::new(complete_task_ids))]
+        id: String,
+
+        /// Provider command name
+        #[arg(add = ArgValueCompleter::new(complete_task_exec_commands))]
+        command: String,
+
+        /// Arguments passed to the provider command
+        #[arg(allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
     },
 }
 
@@ -423,6 +455,118 @@ fn complete_task_ids(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
     result.ok().and_then(|r| r.ok()).unwrap_or_default()
 }
 
+fn completion_words() -> Vec<String> {
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.is_empty() {
+        return Vec::new();
+    }
+
+    args.remove(0);
+
+    let escape_index = args
+        .iter()
+        .position(|a| a == "--")
+        .map(|i| i + 1)
+        .unwrap_or(args.len());
+    args.drain(0..escape_index);
+
+    args.into_iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
+fn completion_exec_target_id(kind: &str) -> Option<String> {
+    let words = completion_words();
+    for index in 0..words.len() {
+        let scope_matches = match kind {
+            "env" => words[index] == "env" || words[index] == "environment",
+            "task" => words[index] == "task",
+            _ => false,
+        };
+        if !scope_matches {
+            continue;
+        }
+
+        let action = words.get(index + 1)?;
+        if action != "exec" && action != "x" {
+            continue;
+        }
+
+        return words.get(index + 2).cloned();
+    }
+
+    None
+}
+
+fn complete_env_exec_commands(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let current = current.to_str().unwrap_or_default().to_owned();
+    let Some(env_id) = completion_exec_target_id("env") else {
+        return Vec::new();
+    };
+
+    let result = std::thread::spawn(move || -> anyhow::Result<Vec<CompletionCandidate>> {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            paths::init(None);
+            let client = client::DaemonClient::new()?;
+            let env = client.get_environment(&env_id).await?;
+            let provider = environment::get_provider(&env.provider)?;
+            let commands = provider.exec_commands(&env.metadata)?;
+
+            let candidates = commands
+                .into_iter()
+                .filter(|cmd| cmd.name.starts_with(&current))
+                .map(|cmd| {
+                    let mut candidate = CompletionCandidate::new(cmd.name);
+                    if let Some(help) = cmd.help {
+                        candidate = candidate.help(Some(help.into()));
+                    }
+                    candidate
+                })
+                .collect();
+            Ok(candidates)
+        })
+    })
+    .join();
+
+    result.ok().and_then(|r| r.ok()).unwrap_or_default()
+}
+
+fn complete_task_exec_commands(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let current = current.to_str().unwrap_or_default().to_owned();
+    let Some(task_id) = completion_exec_target_id("task") else {
+        return Vec::new();
+    };
+
+    let result = std::thread::spawn(move || -> anyhow::Result<Vec<CompletionCandidate>> {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            paths::init(None);
+            let client = client::DaemonClient::new()?;
+            let task = client.get_task(&task_id).await?;
+            let env = client.get_environment(&task.environment_id).await?;
+            let provider = environment::get_provider(&env.provider)?;
+            let commands = provider.exec_commands(&env.metadata)?;
+
+            let candidates = commands
+                .into_iter()
+                .filter(|cmd| cmd.name.starts_with(&current))
+                .map(|cmd| {
+                    let mut candidate = CompletionCandidate::new(cmd.name);
+                    if let Some(help) = cmd.help {
+                        candidate = candidate.help(Some(help.into()));
+                    }
+                    candidate
+                })
+                .collect();
+            Ok(candidates)
+        })
+    })
+    .join();
+
+    result.ok().and_then(|r| r.ok()).unwrap_or_default()
+}
+
 fn print_env(env: &db::Environment, format: &OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Human => {
@@ -515,6 +659,77 @@ async fn follow_environment_logs(
             let _ = std::io::stdout().write_all(chunk);
         })
         .await
+}
+
+fn execute_run_spec(run_spec: environment::RunSpec) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let program = run_spec.program.clone();
+    let mut command = std::process::Command::new(&run_spec.program);
+    command.args(&run_spec.args);
+
+    if let Some(cwd) = &run_spec.cwd {
+        command.current_dir(cwd);
+    }
+
+    for (key, value) in &run_spec.env {
+        command.env(key, value);
+    }
+
+    if run_spec.stdin_data.is_some() {
+        command.stdin(std::process::Stdio::piped());
+    } else {
+        command.stdin(std::process::Stdio::inherit());
+    }
+    command.stdout(std::process::Stdio::inherit());
+    command.stderr(std::process::Stdio::inherit());
+
+    let mut child = command.spawn()?;
+
+    if let Some(data) = run_spec.stdin_data {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(&data)?;
+        }
+    }
+
+    let status = child.wait()?;
+    if status.success() {
+        return Ok(());
+    }
+
+    if let Some(code) = status.code() {
+        std::process::exit(code);
+    }
+
+    anyhow::bail!("process {program} terminated by signal");
+}
+
+async fn exec_environment_command(
+    client: &client::DaemonClient,
+    env_id: &str,
+    provider_command: &str,
+    provider_args: &[String],
+) -> anyhow::Result<()> {
+    let env = client.get_environment(env_id).await?;
+    let provider = environment::get_provider(&env.provider)?;
+    let run_spec = provider.exec(&env.metadata, provider_command, provider_args)?;
+    execute_run_spec(run_spec)
+}
+
+async fn exec_task_command(
+    client: &client::DaemonClient,
+    task_id: &str,
+    provider_command: &str,
+    provider_args: &[String],
+) -> anyhow::Result<()> {
+    let task = client.get_task(task_id).await?;
+    exec_environment_command(
+        client,
+        &task.environment_id,
+        provider_command,
+        provider_args,
+    )
+    .await
 }
 
 async fn run() -> anyhow::Result<()> {
@@ -763,6 +978,9 @@ async fn run() -> anyhow::Result<()> {
                             print!("{contents}");
                         }
                     }
+                    EnvironmentCommand::Exec { id, command, args } => {
+                        exec_environment_command(&client, &id, &command, &args).await?;
+                    }
                     EnvironmentCommand::Provider { command } => match command {
                         ProviderCommand::List => {
                             for name in &environment::list_providers() {
@@ -854,6 +1072,9 @@ async fn run() -> anyhow::Result<()> {
                             let contents = std::fs::read_to_string(&log_path)?;
                             print!("{contents}");
                         }
+                    }
+                    TaskCommand::Exec { id, command, args } => {
+                        exec_task_command(&client, &id, &command, &args).await?;
                     }
                 },
                 Command::Tui => tui::run(client).await?,

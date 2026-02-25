@@ -10,6 +10,12 @@ pub struct RunSpec {
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub stdin_data: Option<Vec<u8>>,
+    pub env: Vec<(String, String)>,
+}
+
+pub struct ProviderExecCommand {
+    pub name: String,
+    pub help: Option<String>,
 }
 
 pub trait EnvironmentProvider {
@@ -31,6 +37,18 @@ pub trait EnvironmentProvider {
     ) -> anyhow::Result<serde_json::Value>;
     fn remove(&self, metadata: &serde_json::Value, log_path: Option<&Path>) -> anyhow::Result<()>;
     fn run(
+        &self,
+        metadata: &serde_json::Value,
+        command: &str,
+        args: &[String],
+    ) -> anyhow::Result<RunSpec>;
+    fn exec_commands(
+        &self,
+        _metadata: &serde_json::Value,
+    ) -> anyhow::Result<Vec<ProviderExecCommand>> {
+        Ok(Vec::new())
+    }
+    fn exec(
         &self,
         metadata: &serde_json::Value,
         command: &str,

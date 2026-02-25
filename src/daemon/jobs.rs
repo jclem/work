@@ -554,6 +554,10 @@ async fn run_task(job: &db::Job) -> anyhow::Result<()> {
         command.current_dir(cwd);
     }
 
+    for (key, value) in &run_spec.env {
+        command.env(key, value);
+    }
+
     if run_spec.stdin_data.is_some() {
         command.stdin(std::process::Stdio::piped());
     } else {

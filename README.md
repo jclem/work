@@ -92,9 +92,11 @@ For custom isolation, write a script provider — see
 ## Custom environment providers
 
 A script provider is an executable that receives an action as its first
-argument and JSON on stdin. It writes JSON to stdout. Stderr is passed through.
+argument and (for most actions) JSON on stdin. For `exec`, metadata is passed
+via `WORK_ENV_METADATA` so stdin/stdout/stderr stay interactive. It writes JSON
+to stdout for non-interactive actions. Stderr is passed through.
 
-Actions: `prepare`, `claim`, `update`, `remove`, `run`.
+Actions: `prepare`, `claim`, `update`, `remove`, `commands`, `exec`, `run`.
 
 Here's an example that uses [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox)
 to run tasks in isolated cloud sandboxes:
@@ -141,6 +143,24 @@ case "$action" in
     sandbox rm "$sandbox_id" || true
     ;;
 
+  commands)
+    echo '["ssh"]'
+    ;;
+
+  exec)
+    sandbox_id=$(echo "$WORK_ENV_METADATA" | jq -r '.sandbox_id')
+    provider_command="$2"
+    case "$provider_command" in
+      ssh)
+        exec sandbox ssh "$sandbox_id"
+        ;;
+      *)
+        echo "Unknown provider command: $provider_command" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+
   run)
     sandbox_id=$(echo "$input" | jq -r '.metadata.sandbox_id')
     command=$(echo "$input" | jq -r '.command')
@@ -163,6 +183,8 @@ esac
 | `claim` | The stored metadata | Updated metadata |
 | `update` | The stored metadata | Updated metadata |
 | `remove` | `{"metadata": ...}` | (ignored) |
+| `commands` | `{"metadata": ...}` | `["cmd", ...]` or `[{"name","help"}]` |
+| `exec` | _none_ (uses `WORK_ENV_METADATA`) | (exec the process) |
 | `run` | `{"metadata": ..., "command": "...", "args": [...]}` | (exec the process) |
 
 The JSON returned by `prepare` is stored as the environment's metadata and
@@ -179,6 +201,7 @@ work task new DESC [--provider P]       Create and run a task
   [--env-provider P] [--attach]
 work task list [--format FORMAT]        List tasks
 work task rm ID [--skip-provider]       Remove a task and its environment
+work task exec|x ID CMD [ARGS...]       Run provider command for task env
 
 work task logs ID [--follow]            View task output
 work env logs ID [--follow]             View environment provider output
@@ -189,6 +212,7 @@ work env claim [ID]                     Claim a pooled environment
 work env update ID                      Update a pooled environment
 work env rm ID [--skip-provider]        Remove an environment
 work env list [--format FORMAT]         List environments
+work env exec|x ID CMD [ARGS...]        Run provider command for env
 work env provider list                  List available providers
 
 work tui                                Open the terminal UI

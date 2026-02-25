@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::db::Project;
 
-use super::{EnvironmentProvider, RunSpec};
+use super::{EnvironmentProvider, ProviderExecCommand, RunSpec};
 
 pub struct ScriptProvider {
     pub command: String,
@@ -17,6 +17,7 @@ impl ScriptProvider {
         action: &str,
         input: &serde_json::Value,
         log_path: Option<&Path>,
+        quiet_stderr: bool,
     ) -> anyhow::Result<serde_json::Value> {
         let input_bytes = serde_json::to_vec(input)?;
 
@@ -34,6 +35,8 @@ impl ScriptProvider {
                 .append(true)
                 .open(path)?;
             command.stderr(Stdio::from(stderr_file));
+        } else if quiet_stderr {
+            command.stderr(Stdio::null());
         } else {
             command.stderr(Stdio::inherit());
         }
@@ -61,6 +64,52 @@ impl ScriptProvider {
         let stdout = String::from_utf8(output.stdout)?;
         Ok(serde_json::from_str(stdout.trim())?)
     }
+
+    fn parse_exec_commands(value: serde_json::Value) -> anyhow::Result<Vec<ProviderExecCommand>> {
+        if let Some(array) = value.as_array() {
+            let mut commands = Vec::with_capacity(array.len());
+            for item in array {
+                if let Some(name) = item.as_str() {
+                    commands.push(ProviderExecCommand {
+                        name: name.to_string(),
+                        help: None,
+                    });
+                    continue;
+                }
+
+                let obj = item.as_object().ok_or_else(|| {
+                    anyhow::anyhow!("commands entries must be strings or objects")
+                })?;
+                let name = obj
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("commands object entries must include name"))?;
+                let help = obj
+                    .get("help")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| obj.get("description").and_then(|v| v.as_str()))
+                    .map(str::to_string);
+                commands.push(ProviderExecCommand {
+                    name: name.to_string(),
+                    help,
+                });
+            }
+            return Ok(commands);
+        }
+
+        if let Some(obj) = value.as_object() {
+            let mut commands = Vec::with_capacity(obj.len());
+            for (name, help_value) in obj {
+                commands.push(ProviderExecCommand {
+                    name: name.to_string(),
+                    help: help_value.as_str().map(str::to_string),
+                });
+            }
+            return Ok(commands);
+        }
+
+        anyhow::bail!("commands output must be an array or object");
+    }
 }
 
 impl EnvironmentProvider for ScriptProvider {
@@ -78,6 +127,7 @@ impl EnvironmentProvider for ScriptProvider {
                 "env_id": env_id,
             }),
             log_path,
+            false,
         )
     }
 
@@ -86,7 +136,7 @@ impl EnvironmentProvider for ScriptProvider {
         metadata: &serde_json::Value,
         log_path: Option<&Path>,
     ) -> anyhow::Result<serde_json::Value> {
-        self.call("update", metadata, log_path)
+        self.call("update", metadata, log_path, false)
     }
 
     fn claim(
@@ -94,7 +144,7 @@ impl EnvironmentProvider for ScriptProvider {
         metadata: &serde_json::Value,
         log_path: Option<&Path>,
     ) -> anyhow::Result<serde_json::Value> {
-        self.call("claim", metadata, log_path)
+        self.call("claim", metadata, log_path, false)
     }
 
     fn remove(&self, metadata: &serde_json::Value, log_path: Option<&Path>) -> anyhow::Result<()> {
@@ -153,6 +203,38 @@ impl EnvironmentProvider for ScriptProvider {
             args: vec!["run".to_string()],
             cwd: None,
             stdin_data: Some(serde_json::to_vec(&input)?),
+            env: Vec::new(),
+        })
+    }
+
+    fn exec_commands(
+        &self,
+        metadata: &serde_json::Value,
+    ) -> anyhow::Result<Vec<ProviderExecCommand>> {
+        let output = self.call("commands", &json!({ "metadata": metadata }), None, true)?;
+        Self::parse_exec_commands(output)
+    }
+
+    fn exec(
+        &self,
+        metadata: &serde_json::Value,
+        command: &str,
+        args: &[String],
+    ) -> anyhow::Result<RunSpec> {
+        let mut run_args = Vec::with_capacity(args.len() + 2);
+        run_args.push("exec".to_string());
+        run_args.push(command.to_string());
+        run_args.extend(args.iter().cloned());
+
+        Ok(RunSpec {
+            program: self.command.clone(),
+            args: run_args,
+            cwd: None,
+            stdin_data: None,
+            env: vec![(
+                "WORK_ENV_METADATA".to_string(),
+                serde_json::to_string(metadata)?,
+            )],
         })
     }
 }

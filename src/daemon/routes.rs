@@ -173,6 +173,21 @@ pub async fn list_environments() -> impl IntoResponse {
     }
 }
 
+pub async fn get_environment(Path(id): Path<String>) -> impl IntoResponse {
+    match crate::db::get_environment(&id) {
+        Ok(env) => (StatusCode::OK, Json(json!(env))).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            let status = if msg.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(json!({"error": msg}))).into_response()
+        }
+    }
+}
+
 pub async fn update_environment(Path(id): Path<String>) -> impl IntoResponse {
     let result = crate::db::stage_update_environment(&id);
 

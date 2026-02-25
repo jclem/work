@@ -99,6 +99,26 @@ impl EnvironmentProvider for GitWorktreeProvider {
             args: args.to_vec(),
             cwd: Some(PathBuf::from(worktree_path)),
             stdin_data: None,
+            env: Vec::new(),
+        })
+    }
+
+    fn exec(
+        &self,
+        metadata: &serde_json::Value,
+        command: &str,
+        args: &[String],
+    ) -> anyhow::Result<RunSpec> {
+        let worktree_path = metadata["worktree_path"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing worktree_path in metadata"))?;
+
+        Ok(RunSpec {
+            program: command.to_string(),
+            args: args.to_vec(),
+            cwd: Some(PathBuf::from(worktree_path)),
+            stdin_data: None,
+            env: Vec::new(),
         })
     }
 

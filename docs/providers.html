@@ -75,12 +75,15 @@ environment-provider = "sandbox"</code></pre>
 
 <p>
 Your script receives the <strong>action name</strong> as its first argument
-and <strong>JSON on stdin</strong>. It must write <strong>JSON to stdout</strong>.
-Stderr is passed through to the daemon log&mdash;use it for progress output.
+and (for most actions) <strong>JSON on stdin</strong>. For
+<code>exec</code>, metadata is provided via
+<code>WORK_ENV_METADATA</code> so stdin/stdout/stderr can remain attached
+to the user terminal. Stderr is passed through to the daemon log for
+non-interactive actions&mdash;use it for progress output.
 </p>
 
 <p>
-There are five actions. Each is called at a specific point in the environment
+There are seven actions. Each is called at a specific point in the environment
 lifecycle:
 </p>
 
@@ -140,6 +143,36 @@ Called when an environment is deleted. Clean up all resources.
 
 <p><strong>stdout:</strong> Ignored.</p>
 
+<h3>commands</h3>
+
+<p>
+Called for shell completion when users type
+<code>work env x ...</code> or <code>work task x ...</code>. Return a list
+of provider-defined command names.
+</p>
+
+<p><strong>stdin:</strong></p>
+<pre><code>{
+  "metadata": { "sandbox_id": "sb-a1b2c3", ... }
+}</code></pre>
+
+<p><strong>stdout:</strong> A JSON array of strings or objects
+(for example <code>["ssh"]</code> or
+<code>[{"name":"ssh","help":"Connect"}]</code>).</p>
+
+<h3>exec</h3>
+
+<p>
+Called when users run <code>work env x|exec ...</code> or
+<code>work task x|exec ...</code>. This path is intended for interactive
+provider commands like <code>ssh</code>.
+</p>
+
+<p><strong>argv:</strong> <code>exec &lt;provider-command&gt; [args...]</code></p>
+<p><strong>environment:</strong> <code>WORK_ENV_METADATA</code> contains the
+environment metadata JSON.</p>
+<p><strong>stdout/stderr:</strong> Connected directly to the user terminal.</p>
+
 <h3>run</h3>
 
 <p>
@@ -188,6 +221,18 @@ process lifecycle directly.
       <td><code>{"metadata": ...}</code></td>
       <td>(ignored)</td>
       <td>Environment deleted</td>
+    </tr>
+    <tr>
+      <td><code>commands</code></td>
+      <td><code>{"metadata": ...}</code></td>
+      <td>list of provider command names</td>
+      <td>Shell completion for <code>x|exec</code></td>
+    </tr>
+    <tr>
+      <td><code>exec</code></td>
+      <td>(none; metadata in <code>WORK_ENV_METADATA</code>)</td>
+      <td>(exec the provider command)</td>
+      <td><code>work env x</code> / <code>work task x</code></td>
     </tr>
     <tr>
       <td><code>run</code></td>
@@ -247,6 +292,24 @@ case "$action" in
   remove)
     sandbox_id=$(echo "$input" | jq -r '.metadata.sandbox_id')
     sandbox rm "$sandbox_id" || true
+    ;;
+
+  commands)
+    echo '[{"name":"ssh","help":"Connect to sandbox"}]'
+    ;;
+
+  exec)
+    sandbox_id=$(echo "$WORK_ENV_METADATA" | jq -r '.sandbox_id')
+    provider_command="$2"
+    case "$provider_command" in
+      ssh)
+        exec sandbox ssh "$sandbox_id"
+        ;;
+      *)
+        echo "Unknown provider command: $provider_command" >&2
+        exit 1
+        ;;
+    esac
     ;;
 
   run)

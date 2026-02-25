@@ -172,6 +172,17 @@ work task logs 4Abc123xYz
 work task logs 4Abc123xYz --follow
 work task logs 4Abc123xYz -f</code></pre>
 
+<h3>work task exec|x ID COMMAND [ARGS...]</h3>
+
+<p>Run a provider-defined command against the task's environment. This is
+useful for commands like <code>ssh</code> exposed by custom providers.</p>
+
+<pre><code># Alias form
+work task x 4Abc123xYz ssh
+
+# Long form
+work task exec 4Abc123xYz ssh</code></pre>
+
 <hr>
 
 <h2>work env</h2>
@@ -219,6 +230,16 @@ work env logs 7Abc123xYz
 # Stream in real time
 work env logs 7Abc123xYz --follow
 work env logs 7Abc123xYz -f</code></pre>
+
+<h3>work env exec|x ID COMMAND [ARGS...]</h3>
+
+<p>Run a provider-defined command directly against an environment.</p>
+
+<pre><code># Alias form
+work env x 7Abc123xYz ssh
+
+# Long form
+work env exec 7Abc123xYz ssh</code></pre>
 
 <h3>work env provider list</h3>
 
