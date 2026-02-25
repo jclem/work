@@ -121,22 +121,6 @@ fn row_to_environment(row: &rusqlite::Row) -> rusqlite::Result<Environment> {
     })
 }
 
-pub fn create_environment(
-    id: &str,
-    project_id: &str,
-    provider: &str,
-    metadata: &serde_json::Value,
-) -> Result<Environment, anyhow::Error> {
-    let conn = connect()?;
-    let now = chrono::Utc::now().to_rfc3339();
-    let metadata_str = serde_json::to_string(metadata)?;
-    conn.execute(
-        "INSERT INTO environments (id, project_id, provider, status, metadata, created_at, updated_at) VALUES (?1, ?2, ?3, 'pool', ?4, ?5, ?6)",
-        rusqlite::params![id, project_id, provider, metadata_str, &now, &now],
-    )?;
-    get_environment(id)
-}
-
 pub fn create_preparing_environment(
     id: &str,
     project_id: &str,
@@ -161,6 +145,19 @@ pub fn finish_preparing_environment(
     let rows = conn.execute(
         "UPDATE environments SET status = 'pool', metadata = ?1, updated_at = ?2 WHERE id = ?3 AND status = 'preparing'",
         rusqlite::params![metadata_str, &now, id],
+    )?;
+    if rows == 0 {
+        anyhow::bail!("environment {id} is not in preparing status");
+    }
+    Ok(())
+}
+
+pub fn fail_preparing_environment(id: &str) -> Result<(), anyhow::Error> {
+    let conn = connect()?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let rows = conn.execute(
+        "UPDATE environments SET status = 'failed', updated_at = ?1 WHERE id = ?2 AND status = 'preparing'",
+        rusqlite::params![&now, id],
     )?;
     if rows == 0 {
         anyhow::bail!("environment {id} is not in preparing status");
@@ -264,8 +261,7 @@ pub fn delete_environment(id: &str) -> Result<(), anyhow::Error> {
 #[derive(serde::Deserialize, serde::Serialize)]
 pub struct Task {
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub environment_id: Option<String>,
+    pub environment_id: String,
     pub project_id: String,
     pub provider: String,
     pub description: String,
@@ -288,6 +284,7 @@ fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
 }
 
 pub fn create_task(
+    environment_id: &str,
     project_id: &str,
     provider: &str,
     description: &str,
@@ -296,18 +293,18 @@ pub fn create_task(
     let id = crate::id::new_id();
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO tasks (id, environment_id, project_id, provider, description, status, created_at, updated_at) VALUES (?1, NULL, ?2, ?3, ?4, 'pending', ?5, ?6)",
-        rusqlite::params![id, project_id, provider, description, &now, &now],
+        "INSERT INTO tasks (id, environment_id, project_id, provider, description, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
+        rusqlite::params![id, environment_id, project_id, provider, description, &now, &now],
     )?;
     get_task(&id)
 }
 
-pub fn start_task(id: &str, environment_id: &str) -> Result<Task, anyhow::Error> {
+pub fn start_task(id: &str) -> Result<Task, anyhow::Error> {
     let conn = connect()?;
     let now = chrono::Utc::now().to_rfc3339();
     let rows = conn.execute(
-        "UPDATE tasks SET environment_id = ?1, status = 'started', updated_at = ?2 WHERE id = ?3",
-        rusqlite::params![environment_id, &now, id],
+        "UPDATE tasks SET status = 'started', updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![&now, id],
     )?;
     if rows == 0 {
         anyhow::bail!("task not found: {id}");
