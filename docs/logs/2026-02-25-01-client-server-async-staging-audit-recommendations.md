@@ -10,7 +10,7 @@ Scope: CLI -> daemon API -> SQLite staging -> job worker execution, with focus o
 - daemon routing and request handlers: `src/daemon/mod.rs`, `src/daemon/routes.rs`
 - async worker execution model: `src/daemon/jobs.rs`
 - database lifecycle and persistence primitives: `src/db/mod.rs`
-- state constraints and migrations: `migrations/0001_init.sql`, `migrations/0002_environment_failed_status.sql`, `migrations/0003_task_environment_not_null.sql`
+- state constraints and migrations: `migrations/0001_init.sql`
 - provider interfaces and execution model: `src/environment/mod.rs`, `src/environment/script.rs`, `src/environment/git_worktree.rs`
 - current tests: `tests/daemon.rs`, `tests/database.rs`
 

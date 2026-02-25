@@ -32,6 +32,15 @@ CREATE TABLE jobs (
     type TEXT NOT NULL,
     payload TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'complete', 'failed')),
+    dedupe_key TEXT,
+    attempt INTEGER NOT NULL DEFAULT 0,
+    not_before TEXT,
+    lease_expires_at TEXT,
+    last_error TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX jobs_dedupe_key_unique
+ON jobs(dedupe_key)
+WHERE dedupe_key IS NOT NULL;
