@@ -11,7 +11,7 @@ mod paths;
 mod tui;
 
 #[derive(Parser)]
-#[command(name = "work", about = "A CLI for managing work")]
+#[command(name = "work", about = "A CLI for managing work", version)]
 struct Cli {
     #[arg(long, global = true, env = "WORK_DEBUG")]
     debug: bool,
@@ -70,6 +70,9 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
+
+    /// Print version information
+    Version,
 
     /// Open the terminal UI
     Tui,
@@ -478,6 +481,9 @@ async fn run() -> anyhow::Result<()> {
                 }
             }
         },
+        Some(Command::Version) => {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        }
         Some(Command::Completions { shell }) => {
             let status = std::process::Command::new(std::env::current_exe()?)
                 .env("COMPLETE", shell.to_string())
@@ -740,7 +746,10 @@ async fn run() -> anyhow::Result<()> {
                     }
                 }
                 Command::Tui => tui::run(client).await?,
-                Command::Config { .. } | Command::Daemon { .. } | Command::Completions { .. } => {
+                Command::Config { .. }
+                | Command::Daemon { .. }
+                | Command::Completions { .. }
+                | Command::Version => {
                     unreachable!()
                 }
             }
