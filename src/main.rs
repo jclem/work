@@ -470,9 +470,17 @@ async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let is_daemon = matches!(cli.command, Some(Command::Daemon { .. }));
+
+    paths::init(cli.work_home);
+    paths::ensure_dirs()?;
+
+    let config = config::load()?;
+
+    let config_debug = config.daemon.as_ref().is_some_and(|d| d.debug);
+
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_max_level(if cli.debug {
+        .with_max_level(if cli.debug || config_debug {
             tracing::Level::DEBUG
         } else if is_daemon {
             tracing::Level::INFO
@@ -480,11 +488,6 @@ async fn run() -> anyhow::Result<()> {
             tracing::Level::WARN
         })
         .init();
-
-    paths::init(cli.work_home);
-    paths::ensure_dirs()?;
-
-    let config = config::load()?;
 
     match cli.command {
         Some(Command::Daemon { command }) => match command {

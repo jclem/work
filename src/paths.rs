@@ -26,7 +26,9 @@ pub fn data_dir() -> Result<PathBuf, anyhow::Error> {
     let base = match std::env::var("XDG_DATA_HOME") {
         Ok(val) if !val.is_empty() => PathBuf::from(val),
         _ => {
-            dirs::data_dir().ok_or_else(|| anyhow::anyhow!("could not determine data directory"))?
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?;
+            home.join(".local").join("share")
         }
     };
 
@@ -53,8 +55,11 @@ pub fn config_dir() -> Result<PathBuf, anyhow::Error> {
 
     let base = match std::env::var("XDG_CONFIG_HOME") {
         Ok(val) if !val.is_empty() => PathBuf::from(val),
-        _ => dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?,
+        _ => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?;
+            home.join(".config")
+        }
     };
 
     Ok(base.join("work"))
