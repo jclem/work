@@ -67,11 +67,16 @@ pub enum Confirm {
     DeleteEnvironment { env_id: String },
 }
 
+pub struct CreateTaskPrompt {
+    pub selected_project: usize,
+}
+
 pub struct App {
     pub should_quit: bool,
     pub tab: Tab,
     pub detail: Option<DetailView>,
     pub confirm: Option<Confirm>,
+    pub create_task_prompt: Option<CreateTaskPrompt>,
     pub tasks: Vec<Task>,
     pub projects: Vec<Project>,
     pub environments: Vec<Environment>,
@@ -96,6 +101,7 @@ impl App {
             tab: Tab::Tasks,
             detail: None,
             confirm: None,
+            create_task_prompt: None,
             tasks: Vec::new(),
             projects: Vec::new(),
             environments: Vec::new(),
@@ -366,6 +372,74 @@ impl App {
                 _ => None,
             },
         }
+    }
+
+    fn default_project_id_for_new_task(&self) -> Option<&str> {
+        if self.tab != Tab::Tasks {
+            return None;
+        }
+
+        match self.task_view_mode {
+            TaskViewMode::Flat => self
+                .tasks
+                .get(self.selected)
+                .map(|task| task.project_id.as_str()),
+            TaskViewMode::Tree => match self.tree_rows.get(self.selected) {
+                Some(TreeRow::Project(pi)) => {
+                    self.projects.get(*pi).map(|project| project.id.as_str())
+                }
+                Some(TreeRow::Task(ti) | TreeRow::TaskEnvironment(ti)) => {
+                    self.tasks.get(*ti).map(|task| task.project_id.as_str())
+                }
+                None => None,
+            },
+        }
+    }
+
+    pub fn begin_create_task_prompt(&mut self) {
+        if self.tab != Tab::Tasks {
+            return;
+        }
+        if self.projects.is_empty() {
+            self.error = Some("no projects available".to_string());
+            return;
+        }
+
+        let selected_project = self
+            .default_project_id_for_new_task()
+            .and_then(|project_id| self.projects.iter().position(|p| p.id == project_id))
+            .unwrap_or(0);
+
+        self.create_task_prompt = Some(CreateTaskPrompt { selected_project });
+        self.error = None;
+    }
+
+    pub fn cancel_create_task_prompt(&mut self) {
+        self.create_task_prompt = None;
+    }
+
+    pub fn create_task_prompt_select_next(&mut self) {
+        let Some(prompt) = self.create_task_prompt.as_mut() else {
+            return;
+        };
+        if prompt.selected_project + 1 < self.projects.len() {
+            prompt.selected_project += 1;
+        }
+    }
+
+    pub fn create_task_prompt_select_prev(&mut self) {
+        let Some(prompt) = self.create_task_prompt.as_mut() else {
+            return;
+        };
+        if prompt.selected_project > 0 {
+            prompt.selected_project -= 1;
+        }
+    }
+
+    pub fn create_task_prompt_selected_project(&self) -> Option<&Project> {
+        self.create_task_prompt
+            .as_ref()
+            .and_then(|prompt| self.projects.get(prompt.selected_project))
     }
 
     pub fn enter_detail(&mut self) {

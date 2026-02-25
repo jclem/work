@@ -37,6 +37,10 @@ pub fn draw(frame: &mut Frame, app: &App, tick_count: usize) {
 
     draw_status_bar(frame, app, chunks[2]);
 
+    if app.create_task_prompt.is_some() {
+        draw_create_task_prompt(frame, app);
+    }
+
     if app.confirm.is_some() {
         draw_confirm_dialog(frame, app);
     }
@@ -77,6 +81,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             err.as_str(),
             Style::default().fg(Color::Red),
         )])
+    } else if app.create_task_prompt.is_some() {
+        Line::from(vec![Span::styled(
+            " j/k: choose project | Enter: open editor | q/Esc: cancel",
+            Style::default().add_modifier(Modifier::DIM),
+        )])
     } else {
         let hints = match app.detail {
             Some(DetailView::TaskLog { .. } | DetailView::EnvironmentLog { .. }) => {
@@ -85,10 +94,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             None => match app.tab {
                 Tab::Tasks => match app.task_view_mode {
                     TaskViewMode::Flat => {
-                        " Tab: tabs | j/k: navigate | Enter: logs | d: delete | `: flat/tree | q: quit"
+                        " Tab: tabs | j/k: navigate | Enter: logs | n: new | d: delete | `: flat/tree | q: quit"
                     }
                     TaskViewMode::Tree => {
-                        " Tab: tabs | j/k: navigate | h/l: collapse/expand | Enter: logs | d: delete | `: flat/tree | q: quit"
+                        " Tab: tabs | j/k: navigate | h/l: collapse/expand | Enter: logs | n: new | d: delete | `: flat/tree | q: quit"
                     }
                 },
                 Tab::Projects => " Tab: tabs | j/k: navigate | d: delete | q: quit",
@@ -407,6 +416,106 @@ fn draw_tui_logs_view(frame: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: false });
 
     frame.render_widget(log, area);
+}
+
+fn draw_create_task_prompt(frame: &mut Frame, app: &App) {
+    let Some(prompt) = app.create_task_prompt.as_ref() else {
+        return;
+    };
+    if app.projects.is_empty() {
+        return;
+    }
+
+    let selected = prompt
+        .selected_project
+        .min(app.projects.len().saturating_sub(1));
+    let max_visible = 6usize;
+    let mut start = selected.saturating_sub(max_visible / 2);
+    let mut end = (start + max_visible).min(app.projects.len());
+    start = end.saturating_sub(max_visible);
+    end = end.max(start);
+
+    let mut lines = vec![
+        Line::from(vec![Span::styled(
+            "Select project",
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "A new task prompt opens in $EDITOR after confirmation.",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::default(),
+    ];
+
+    if start > 0 {
+        lines.push(Line::from(vec![Span::styled(
+            format!("  … {start} more above"),
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
+
+    for (idx, project) in app
+        .projects
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(end - start)
+    {
+        let is_selected = idx == selected;
+        let marker = if is_selected { "›" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {marker} "),
+                Style::default().fg(if is_selected {
+                    Color::LightCyan
+                } else {
+                    Color::DarkGray
+                }),
+            ),
+            Span::styled(
+                project.name.clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(if is_selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            Span::styled(
+                format!("  {}", project.path),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
+    if end < app.projects.len() {
+        lines.push(Line::from(vec![Span::styled(
+            format!("  … {} more below", app.projects.len() - end),
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
+
+    lines.push(Line::default());
+    lines.push(Line::from(vec![Span::styled(
+        "Enter: confirm and open editor    q/Esc: cancel",
+        Style::default().fg(Color::Gray),
+    )]));
+
+    let content_height = lines.len() as u16 + 2;
+    let area = centered_rect(86, content_height, frame.area());
+    frame.render_widget(Clear, area);
+
+    let dialog = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" New Task ")
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+
+    frame.render_widget(dialog, area);
 }
 
 fn draw_confirm_dialog(frame: &mut Frame, app: &App) {

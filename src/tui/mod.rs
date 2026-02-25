@@ -9,8 +9,14 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::client::{DaemonClient, DaemonEvent};
+use crate::db::Project;
 
 use app::{App, Tab};
+
+enum EditorOutcome {
+    Submitted(String),
+    Cancelled(String),
+}
 
 pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
     // Set panic hook to restore terminal on panic.
@@ -92,7 +98,10 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-                    handle_key(&mut app, &client, key).await;
+                    let needs_full_redraw = handle_key(&mut app, &client, key).await;
+                    if needs_full_redraw {
+                        terminal.clear()?;
+                    }
                     if app.should_quit {
                         break;
                     }
@@ -114,7 +123,7 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) {
+async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) -> bool {
     // Confirm dialog takes priority.
     if app.confirm.is_some() {
         match key.code {
@@ -122,7 +131,21 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             KeyCode::Char('n') | KeyCode::Esc => app.cancel_confirm(),
             _ => {}
         }
-        return;
+        return false;
+    }
+
+    if app.create_task_prompt.is_some() {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => app.create_task_prompt_select_next(),
+            KeyCode::Char('k') | KeyCode::Up => app.create_task_prompt_select_prev(),
+            KeyCode::Enter => {
+                confirm_create_task_prompt(app, client).await;
+                return true;
+            }
+            KeyCode::Char('q') | KeyCode::Esc => app.cancel_create_task_prompt(),
+            _ => {}
+        }
+        return false;
     }
 
     // Detail view (e.g. log view) takes priority over tab content.
@@ -137,46 +160,46 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             KeyCode::Char('u') => app.scroll_log_up(20),
             _ => {}
         }
-        return;
+        return false;
     }
 
     // Global keys (when no detail view is open).
     match key.code {
         KeyCode::Char('q') => {
             app.should_quit = true;
-            return;
+            return false;
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
-            return;
+            return false;
         }
         KeyCode::Tab => {
             app.next_tab();
-            return;
+            return false;
         }
         KeyCode::BackTab => {
             app.prev_tab();
-            return;
+            return false;
         }
         KeyCode::Char('1') => {
             app.select_tab(0);
-            return;
+            return false;
         }
         KeyCode::Char('2') => {
             app.select_tab(1);
-            return;
+            return false;
         }
         KeyCode::Char('3') => {
             app.select_tab(2);
-            return;
+            return false;
         }
         KeyCode::Char('4') => {
             app.select_tab(3);
-            return;
+            return false;
         }
         KeyCode::Char('5') => {
             app.select_tab(4);
-            return;
+            return false;
         }
         _ => {}
     }
@@ -192,6 +215,7 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             KeyCode::Char('L') => app.expand_all(),
             KeyCode::Enter => app.enter_detail(),
             KeyCode::Char('d') => app.prompt_delete(),
+            KeyCode::Char('n') => app.begin_create_task_prompt(),
             KeyCode::Char('`') => app.toggle_task_view_mode(),
             _ => {}
         },
@@ -219,4 +243,107 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             _ => {}
         },
     }
+
+    false
+}
+
+async fn confirm_create_task_prompt(app: &mut App, client: &DaemonClient) {
+    let Some(project) = app.create_task_prompt_selected_project().cloned() else {
+        app.cancel_create_task_prompt();
+        app.error = Some("selected project is no longer available".to_string());
+        return;
+    };
+    app.cancel_create_task_prompt();
+
+    let description = match edit_task_description() {
+        Ok(EditorOutcome::Submitted(description)) => description,
+        Ok(EditorOutcome::Cancelled(reason)) => {
+            app.error = Some(reason);
+            return;
+        }
+        Err(e) => {
+            app.error = Some(format!("task creation failed: {e}"));
+            return;
+        }
+    };
+
+    create_task_for_project(app, client, &project, &description).await;
+}
+
+async fn create_task_for_project(
+    app: &mut App,
+    client: &DaemonClient,
+    project: &Project,
+    description: &str,
+) {
+    let config = match crate::config::load() {
+        Ok(config) => config,
+        Err(e) => {
+            app.error = Some(format!("task creation failed: {e}"));
+            return;
+        }
+    };
+
+    let Some(task_provider) = config.default_task_provider_for_project(&project.name) else {
+        app.error = Some("--provider is required (or set task-provider in config)".to_string());
+        return;
+    };
+    let Some(env_provider) = config.default_environment_provider_for_project(&project.name) else {
+        app.error =
+            Some("--env-provider is required (or set environment-provider in config)".to_string());
+        return;
+    };
+
+    if let Err(e) = config.get_task_provider(&task_provider) {
+        app.error = Some(format!("task creation failed: {e}"));
+        return;
+    }
+
+    match client
+        .create_task(&project.id, &task_provider, &env_provider, description)
+        .await
+    {
+        Ok(_) => {
+            app.error = None;
+            app.poll(client).await;
+        }
+        Err(e) => {
+            app.error = Some(format!("create failed: {e}"));
+        }
+    }
+}
+
+fn edit_task_description() -> anyhow::Result<EditorOutcome> {
+    let editor = std::env::var("EDITOR").map_err(|_| anyhow::anyhow!("$EDITOR is not set"))?;
+    let path = std::env::temp_dir().join(format!("work-task-{}.txt", crate::id::new_id()));
+    std::fs::write(&path, "")?;
+
+    terminal::disable_raw_mode()?;
+    crossterm::execute!(io::stdout(), LeaveAlternateScreen)?;
+
+    let status_result = std::process::Command::new(&editor).arg(&path).status();
+    let restore_screen_result = crossterm::execute!(io::stdout(), EnterAlternateScreen);
+    let restore_raw_result = terminal::enable_raw_mode();
+
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+
+    restore_screen_result?;
+    restore_raw_result?;
+
+    let status = status_result?;
+    if !status.success() {
+        return Ok(EditorOutcome::Cancelled(format!(
+            "task creation cancelled ({editor} exited with {status})"
+        )));
+    }
+
+    let description = contents.trim().to_string();
+    if description.is_empty() {
+        return Ok(EditorOutcome::Cancelled(
+            "task description is empty".to_string(),
+        ));
+    }
+
+    Ok(EditorOutcome::Submitted(description))
 }
