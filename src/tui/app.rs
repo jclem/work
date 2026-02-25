@@ -24,7 +24,7 @@ impl Tab {
 
     pub fn label(self) -> &'static str {
         match self {
-            Tab::Tasks => "Tasks",
+            Tab::Tasks => "🐣 Tasks",
             Tab::Projects => "Projects",
             Tab::Environments => "Environments",
             Tab::Daemon => "Daemon",
