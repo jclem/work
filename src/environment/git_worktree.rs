@@ -1,10 +1,11 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::json;
 
 use crate::db::Project;
 
-use super::EnvironmentProvider;
+use super::{EnvironmentProvider, RunSpec};
 
 pub struct GitWorktreeProvider;
 
@@ -68,6 +69,24 @@ impl EnvironmentProvider for GitWorktreeProvider {
 
     fn claim(&self, metadata: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Ok(metadata.clone())
+    }
+
+    fn run(
+        &self,
+        metadata: &serde_json::Value,
+        command: &str,
+        args: &[String],
+    ) -> anyhow::Result<RunSpec> {
+        let worktree_path = metadata["worktree_path"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing worktree_path in metadata"))?;
+
+        Ok(RunSpec {
+            program: command.to_string(),
+            args: args.to_vec(),
+            cwd: Some(PathBuf::from(worktree_path)),
+            stdin_data: None,
+        })
     }
 
     fn remove(&self, metadata: &serde_json::Value) -> anyhow::Result<()> {
