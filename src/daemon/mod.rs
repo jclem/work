@@ -3,6 +3,7 @@ mod routes;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use axum::Router;
 use axum::routing::{delete, get, post};
@@ -104,6 +105,100 @@ pub async fn start(force: bool) -> anyhow::Result<()> {
     cleanup(&runtime_dir);
     tracing::info!("daemon shut down");
 
+    Ok(())
+}
+
+const LABEL: &str = "com.jclem.work";
+
+fn plist_path() -> anyhow::Result<PathBuf> {
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?;
+    Ok(home
+        .join("Library/LaunchAgents")
+        .join(format!("{LABEL}.plist")))
+}
+
+fn get_uid() -> anyhow::Result<String> {
+    let output = Command::new("id").arg("-u").output()?;
+    if !output.status.success() {
+        anyhow::bail!("failed to get uid");
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+pub fn install() -> anyhow::Result<()> {
+    let binary_path = std::env::current_exe()?;
+    let state_dir = crate::paths::state_dir()?;
+    fs::create_dir_all(&state_dir)?;
+
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{binary}</string>
+        <string>daemon</string>
+        <string>start</string>
+        <string>--force</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{out_log}</string>
+    <key>StandardErrorPath</key>
+    <string>{err_log}</string>
+</dict>
+</plist>
+"#,
+        label = LABEL,
+        binary = binary_path.display(),
+        out_log = state_dir.join("daemon.out.log").display(),
+        err_log = state_dir.join("daemon.err.log").display(),
+    );
+
+    let plist_path = plist_path()?;
+    fs::create_dir_all(plist_path.parent().unwrap())?;
+    fs::write(&plist_path, &plist)?;
+
+    let uid = get_uid()?;
+    let status = Command::new("launchctl")
+        .args([
+            "bootstrap",
+            &format!("gui/{uid}"),
+            &plist_path.to_string_lossy(),
+        ])
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("launchctl bootstrap failed with {status}");
+    }
+
+    println!("daemon installed and started ({})", plist_path.display());
+    Ok(())
+}
+
+pub fn uninstall() -> anyhow::Result<()> {
+    let plist_path = plist_path()?;
+    let uid = get_uid()?;
+
+    let status = Command::new("launchctl")
+        .args([
+            "bootout",
+            &format!("gui/{uid}"),
+            &plist_path.to_string_lossy(),
+        ])
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("launchctl bootout failed with {status}");
+    }
+
+    fs::remove_file(&plist_path)?;
+    println!("daemon uninstalled ({})", plist_path.display());
     Ok(())
 }
 
