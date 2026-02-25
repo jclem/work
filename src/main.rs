@@ -10,6 +10,28 @@ mod id;
 mod paths;
 mod tui;
 
+struct FileOrSinkWriter {
+    file: Option<std::fs::File>,
+}
+
+impl std::io::Write for FileOrSinkWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(file) = &mut self.file {
+            file.write(buf)
+        } else {
+            Ok(buf.len())
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if let Some(file) = &mut self.file {
+            file.flush()
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "work", about = "A CLI for managing work", version)]
 struct Cli {
@@ -470,6 +492,7 @@ async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let is_daemon = matches!(cli.command, Some(Command::Daemon { .. }));
+    let is_tui = matches!(cli.command, Some(Command::Tui));
 
     paths::init(cli.work_home);
     paths::ensure_dirs()?;
@@ -478,16 +501,35 @@ async fn run() -> anyhow::Result<()> {
 
     let config_debug = config.daemon.as_ref().is_some_and(|d| d.debug);
 
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_max_level(if cli.debug || config_debug {
-            tracing::Level::DEBUG
-        } else if is_daemon {
-            tracing::Level::INFO
-        } else {
-            tracing::Level::WARN
-        })
-        .init();
+    let max_level = if cli.debug || config_debug {
+        tracing::Level::DEBUG
+    } else if is_daemon {
+        tracing::Level::INFO
+    } else {
+        tracing::Level::WARN
+    };
+
+    if is_tui {
+        // Never emit logs to the terminal while the alternate-screen TUI is active.
+        // Write them to a state file that the TUI can display in its Logs tab.
+        let log_path = paths::tui_log_path()?;
+        let _ = std::fs::write(&log_path, "");
+        tracing_subscriber::fmt()
+            .with_writer(move || FileOrSinkWriter {
+                file: std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .ok(),
+            })
+            .with_max_level(max_level)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_max_level(max_level)
+            .init();
+    }
 
     match cli.command {
         Some(Command::Daemon { command }) => match command {

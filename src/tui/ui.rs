@@ -29,6 +29,7 @@ pub fn draw(frame: &mut Frame, app: &App, tick_count: usize) {
             Tab::Projects => draw_project_list(frame, app, chunks[1]),
             Tab::Environments => draw_environment_list(frame, app, tick_count, chunks[1]),
             Tab::Daemon => draw_daemon_view(frame, app, tick_count, chunks[1]),
+            Tab::Logs => draw_tui_logs_view(frame, app, chunks[1]),
         },
     }
 
@@ -91,6 +92,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 Tab::Projects => " Tab: tabs | j/k: navigate | D: delete | q: quit",
                 Tab::Environments => " Tab: tabs | j/k: navigate | q: quit",
                 Tab::Daemon => " Tab: tabs | q: quit",
+                Tab::Logs => {
+                    " Tab: tabs | j/k: scroll | g/G: top/bottom | d/u: half-page | q: quit"
+                }
             },
         };
         Line::from(vec![Span::styled(
@@ -373,6 +377,15 @@ fn draw_log_view(frame: &mut Frame, app: &App, area: Rect) {
     let log = Paragraph::new(app.log_content.as_str())
         .block(Block::default().borders(Borders::ALL).title(title))
         .scroll((app.log_scroll as u16, 0))
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(log, area);
+}
+
+fn draw_tui_logs_view(frame: &mut Frame, app: &App, area: Rect) {
+    let log = Paragraph::new(app.tui_log_content.as_str())
+        .block(Block::default().borders(Borders::ALL).title(" TUI Logs "))
+        .scroll((app.tui_log_scroll as u16, 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(log, area);

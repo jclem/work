@@ -10,10 +10,17 @@ pub enum Tab {
     Projects,
     Environments,
     Daemon,
+    Logs,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Tasks, Tab::Projects, Tab::Environments, Tab::Daemon];
+    pub const ALL: [Tab; 5] = [
+        Tab::Tasks,
+        Tab::Projects,
+        Tab::Environments,
+        Tab::Daemon,
+        Tab::Logs,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -21,6 +28,7 @@ impl Tab {
             Tab::Projects => "Projects",
             Tab::Environments => "Environments",
             Tab::Daemon => "Daemon",
+            Tab::Logs => "Logs",
         }
     }
 
@@ -30,6 +38,7 @@ impl Tab {
             Tab::Projects => 1,
             Tab::Environments => 2,
             Tab::Daemon => 3,
+            Tab::Logs => 4,
         }
     }
 }
@@ -69,6 +78,8 @@ pub struct App {
     pub log_scroll: usize,
     pub error: Option<String>,
     pub daemon_connected: bool,
+    pub tui_log_content: String,
+    pub tui_log_scroll: usize,
     pub task_view_mode: TaskViewMode,
     pub tree_rows: Vec<TreeRow>,
     pub collapsed_projects: HashSet<usize>,
@@ -91,6 +102,8 @@ impl App {
             log_scroll: 0,
             error: None,
             daemon_connected: false,
+            tui_log_content: String::new(),
+            tui_log_scroll: 0,
             task_view_mode,
             tree_rows: Vec::new(),
             collapsed_projects: HashSet::new(),
@@ -121,6 +134,7 @@ impl App {
 
         self.rebuild_tree();
         self.clamp_selected();
+        self.refresh_tui_logs();
 
         if let Some(DetailView::TaskLog { ref task_id }) = self.detail {
             self.log_content = read_log(task_id);
@@ -315,6 +329,7 @@ impl App {
             Tab::Projects => self.projects.len(),
             Tab::Environments => self.environments.len(),
             Tab::Daemon => 0,
+            Tab::Logs => 0,
         }
     }
 
@@ -415,6 +430,33 @@ impl App {
         self.log_scroll = line_count.saturating_sub(1);
     }
 
+    pub fn refresh_tui_logs(&mut self) {
+        self.tui_log_content = read_tui_log();
+        let line_count = self.tui_log_content.lines().count();
+        self.tui_log_scroll = self.tui_log_scroll.min(line_count.saturating_sub(1));
+    }
+
+    pub fn scroll_tui_log_down(&mut self, amount: usize) {
+        let line_count = self.tui_log_content.lines().count();
+        self.tui_log_scroll = self
+            .tui_log_scroll
+            .saturating_add(amount)
+            .min(line_count.saturating_sub(1));
+    }
+
+    pub fn scroll_tui_log_up(&mut self, amount: usize) {
+        self.tui_log_scroll = self.tui_log_scroll.saturating_sub(amount);
+    }
+
+    pub fn scroll_tui_log_top(&mut self) {
+        self.tui_log_scroll = 0;
+    }
+
+    pub fn scroll_tui_log_bottom(&mut self) {
+        let line_count = self.tui_log_content.lines().count();
+        self.tui_log_scroll = line_count.saturating_sub(1);
+    }
+
     pub fn prompt_delete(&mut self) {
         match self.tab {
             Tab::Tasks => {
@@ -512,6 +554,13 @@ fn save_task_view_mode(mode: TaskViewMode) {
 
 fn read_log(task_id: &str) -> String {
     paths::task_log_path(task_id)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
+fn read_tui_log() -> String {
+    paths::tui_log_path()
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default()
