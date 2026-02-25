@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde_json::json;
@@ -11,15 +12,33 @@ pub struct ScriptProvider {
 }
 
 impl ScriptProvider {
-    fn call(&self, action: &str, input: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    fn call(
+        &self,
+        action: &str,
+        input: &serde_json::Value,
+        log_path: Option<&Path>,
+    ) -> anyhow::Result<serde_json::Value> {
         let input_bytes = serde_json::to_vec(input)?;
 
-        let mut child = Command::new(&self.command)
+        let mut command = Command::new(&self.command);
+        command
             .arg(action)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+            .stdout(Stdio::piped());
+        if let Some(path) = log_path {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let stderr_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            command.stderr(Stdio::from(stderr_file));
+        } else {
+            command.stderr(Stdio::inherit());
+        }
+
+        let mut child = command.spawn()?;
 
         use std::io::Write;
         child
@@ -45,7 +64,12 @@ impl ScriptProvider {
 }
 
 impl EnvironmentProvider for ScriptProvider {
-    fn prepare(&self, project: &Project, env_id: &str) -> anyhow::Result<serde_json::Value> {
+    fn prepare(
+        &self,
+        project: &Project,
+        env_id: &str,
+        log_path: Option<&Path>,
+    ) -> anyhow::Result<serde_json::Value> {
         self.call(
             "prepare",
             &json!({
@@ -53,27 +77,49 @@ impl EnvironmentProvider for ScriptProvider {
                 "project_path": project.path,
                 "env_id": env_id,
             }),
+            log_path,
         )
     }
 
-    fn update(&self, metadata: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        self.call("update", metadata)
+    fn update(
+        &self,
+        metadata: &serde_json::Value,
+        log_path: Option<&Path>,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.call("update", metadata, log_path)
     }
 
-    fn claim(&self, metadata: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        self.call("claim", metadata)
+    fn claim(
+        &self,
+        metadata: &serde_json::Value,
+        log_path: Option<&Path>,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.call("claim", metadata, log_path)
     }
 
-    fn remove(&self, metadata: &serde_json::Value) -> anyhow::Result<()> {
+    fn remove(&self, metadata: &serde_json::Value, log_path: Option<&Path>) -> anyhow::Result<()> {
         let input = json!({ "metadata": metadata });
         let input_bytes = serde_json::to_vec(&input)?;
 
-        let mut child = Command::new(&self.command)
-            .arg("remove")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+        let mut command = Command::new(&self.command);
+        command.arg("remove").stdin(Stdio::piped());
+        if let Some(path) = log_path {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let stdout_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            let stderr_file = stdout_file.try_clone()?;
+            command.stdout(Stdio::from(stdout_file));
+            command.stderr(Stdio::from(stderr_file));
+        } else {
+            command.stdout(Stdio::inherit());
+            command.stderr(Stdio::inherit());
+        }
+
+        let mut child = command.spawn()?;
 
         use std::io::Write;
         child

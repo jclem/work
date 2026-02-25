@@ -64,6 +64,9 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
         tokio::select! {
             _ = tick_interval.tick() => {
                 tick_count = tick_count.wrapping_add(1);
+                if app.detail.is_some() {
+                    app.refresh_detail_logs();
+                }
                 if app.tab == Tab::Logs {
                     app.refresh_tui_logs();
                 }
@@ -201,6 +204,7 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
         Tab::Environments => match key.code {
             KeyCode::Char('j') | KeyCode::Down => app.select_next(),
             KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+            KeyCode::Enter => app.enter_detail(),
             _ => {}
         },
         Tab::Daemon => {}

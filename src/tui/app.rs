@@ -58,6 +58,7 @@ pub enum TreeRow {
 
 pub enum DetailView {
     TaskLog { task_id: String },
+    EnvironmentLog { env_id: String },
 }
 
 pub enum Confirm {
@@ -135,10 +136,7 @@ impl App {
         self.rebuild_tree();
         self.clamp_selected();
         self.refresh_tui_logs();
-
-        if let Some(DetailView::TaskLog { ref task_id }) = self.detail {
-            self.log_content = read_log(task_id);
-        }
+        self.refresh_detail_logs();
     }
 
     pub fn rebuild_tree(&mut self) {
@@ -370,14 +368,24 @@ impl App {
     }
 
     pub fn enter_detail(&mut self) {
-        if self.tab != Tab::Tasks {
-            return;
-        }
-        if let Some(ti) = self.selected_task_index() {
-            let task_id = self.tasks[ti].id.clone();
-            self.log_content = read_log(&task_id);
-            self.log_scroll = 0;
-            self.detail = Some(DetailView::TaskLog { task_id });
+        match self.tab {
+            Tab::Tasks => {
+                if let Some(ti) = self.selected_task_index() {
+                    let task_id = self.tasks[ti].id.clone();
+                    self.log_content = read_task_log(&task_id);
+                    self.log_scroll = self.log_content.lines().count().saturating_sub(1);
+                    self.detail = Some(DetailView::TaskLog { task_id });
+                }
+            }
+            Tab::Environments => {
+                if let Some(env) = self.environments.get(self.selected) {
+                    let env_id = env.id.clone();
+                    self.log_content = read_environment_log(&env_id);
+                    self.log_scroll = self.log_content.lines().count().saturating_sub(1);
+                    self.detail = Some(DetailView::EnvironmentLog { env_id });
+                }
+            }
+            _ => {}
         }
     }
 
@@ -408,10 +416,35 @@ impl App {
         self.log_scroll = line_count.saturating_sub(1);
     }
 
+    pub fn refresh_detail_logs(&mut self) {
+        let old_line_count = self.log_content.lines().count();
+        let was_at_bottom = self.log_scroll >= old_line_count.saturating_sub(1);
+
+        let new_content = match self.detail.as_ref() {
+            Some(DetailView::TaskLog { task_id }) => read_task_log(task_id),
+            Some(DetailView::EnvironmentLog { env_id }) => read_environment_log(env_id),
+            None => return,
+        };
+        self.log_content = new_content;
+        let new_line_count = self.log_content.lines().count();
+        if was_at_bottom {
+            self.log_scroll = new_line_count.saturating_sub(1);
+        } else {
+            self.log_scroll = self.log_scroll.min(new_line_count.saturating_sub(1));
+        }
+    }
+
     pub fn refresh_tui_logs(&mut self) {
+        let old_line_count = self.tui_log_content.lines().count();
+        let was_at_bottom = self.tui_log_scroll >= old_line_count.saturating_sub(1);
+
         self.tui_log_content = read_tui_log();
-        let line_count = self.tui_log_content.lines().count();
-        self.tui_log_scroll = self.tui_log_scroll.min(line_count.saturating_sub(1));
+        let new_line_count = self.tui_log_content.lines().count();
+        if was_at_bottom {
+            self.tui_log_scroll = new_line_count.saturating_sub(1);
+        } else {
+            self.tui_log_scroll = self.tui_log_scroll.min(new_line_count.saturating_sub(1));
+        }
     }
 
     pub fn scroll_tui_log_down(&mut self, amount: usize) {
@@ -530,8 +563,15 @@ fn save_task_view_mode(mode: TaskViewMode) {
     }
 }
 
-fn read_log(task_id: &str) -> String {
+fn read_task_log(task_id: &str) -> String {
     paths::task_log_path(task_id)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
+fn read_environment_log(env_id: &str) -> String {
+    paths::environment_log_path(env_id)
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default()

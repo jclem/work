@@ -92,6 +92,7 @@ pub async fn start(force: bool) -> anyhow::Result<()> {
         .route("/environments/{id}/claim", post(routes::claim_environment))
         .route("/environments/claim", post(routes::claim_next_environment))
         .route("/environments/{id}", delete(routes::remove_environment))
+        .route("/environments/{id}/logs", get(routes::tail_environment_logs))
         .route("/tasks", get(routes::list_tasks).post(routes::create_task))
         .route(
             "/tasks/{id}",

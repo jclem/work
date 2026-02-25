@@ -579,6 +579,109 @@ command = "{}"
 }
 
 #[test]
+fn environment_prepare_writes_lifecycle_log_file() {
+    let d = DaemonFixture::start();
+
+    let provider_script = d.work_dir.path().join("logging-env-provider.sh");
+    write_executable_script(
+        &provider_script,
+        r#"#!/bin/sh
+set -eu
+action="$1"
+case "$action" in
+  prepare|update|claim)
+    echo "provider-output: action=$action" >&2
+    echo '{}'
+    ;;
+  remove)
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[environments.providers.logging]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("logging-env-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "logging-env-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let prepare_out = d
+        .assert_cmd()
+        .args([
+            "environment",
+            "prepare",
+            "logging-env-proj",
+            "--provider",
+            "logging",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let env: serde_json::Value = serde_json::from_slice(&prepare_out).unwrap();
+    let env_id = env["id"].as_str().unwrap().to_string();
+
+    wait_for_env_status(&d, &env_id, "pool", Duration::from_secs(8));
+
+    let log_path = d
+        .work_dir
+        .path()
+        .join("data/logs/environments")
+        .join(format!("{env_id}.log"));
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let contents = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if contents.contains("job=prepare_environment")
+            && contents.contains("phase=complete")
+            && contents.contains("provider-output: action=prepare")
+        {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for lifecycle log content at {}: {}",
+                log_path.display(),
+                contents
+            );
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    d.assert_cmd()
+        .args(["logs", "--environment", &env_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("provider-output: action=prepare"));
+}
+
+#[test]
 fn environment_update_is_queued_and_failure_happens_async() {
     let d = DaemonFixture::start();
 

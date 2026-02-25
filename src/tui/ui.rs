@@ -20,7 +20,9 @@ pub fn draw(frame: &mut Frame, app: &App, tick_count: usize) {
     draw_tab_bar(frame, app, chunks[0]);
 
     match app.detail {
-        Some(DetailView::TaskLog { .. }) => draw_log_view(frame, app, chunks[1]),
+        Some(DetailView::TaskLog { .. } | DetailView::EnvironmentLog { .. }) => {
+            draw_log_view(frame, app, chunks[1])
+        }
         None => match app.tab {
             Tab::Tasks => match app.task_view_mode {
                 TaskViewMode::Flat => draw_task_list_flat(frame, app, tick_count, chunks[1]),
@@ -77,7 +79,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         )])
     } else {
         let hints = match app.detail {
-            Some(DetailView::TaskLog { .. }) => {
+            Some(DetailView::TaskLog { .. } | DetailView::EnvironmentLog { .. }) => {
                 " q/Esc: back | j/k: scroll | g/G: top/bottom | d/u: half-page"
             }
             None => match app.tab {
@@ -90,7 +92,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     }
                 },
                 Tab::Projects => " Tab: tabs | j/k: navigate | D: delete | q: quit",
-                Tab::Environments => " Tab: tabs | j/k: navigate | q: quit",
+                Tab::Environments => " Tab: tabs | j/k: navigate | Enter: logs | q: quit",
                 Tab::Daemon => " Tab: tabs | q: quit",
                 Tab::Logs => {
                     " Tab: tabs | j/k: scroll | g/G: top/bottom | d/u: half-page | q: quit"
@@ -124,6 +126,17 @@ fn status_span(status: &str, tick_count: usize) -> Span<'static> {
 
 fn short_id(id: &str) -> &str {
     if id.len() > 8 { &id[..8] } else { id }
+}
+
+fn scroll_top_for_bottom_follow(line_index: usize, area: Rect) -> u16 {
+    // Paragraph text area excludes top/bottom borders.
+    let visible_lines = area.height.saturating_sub(2) as usize;
+    let top = if visible_lines > 0 {
+        line_index.saturating_sub(visible_lines.saturating_sub(1))
+    } else {
+        line_index
+    };
+    top.min(u16::MAX as usize) as u16
 }
 
 fn row_style(selected: bool) -> Style {
@@ -355,21 +368,31 @@ fn draw_daemon_view(frame: &mut Frame, app: &App, tick_count: usize, area: Rect)
 }
 
 fn draw_log_view(frame: &mut Frame, app: &App, area: Rect) {
-    let title = if let Some(DetailView::TaskLog { ref task_id }) = app.detail {
-        let desc = app
-            .tasks
-            .iter()
-            .find(|t| t.id == *task_id)
-            .map(|t| t.description.as_str())
-            .unwrap_or("");
-        format!(" {} - {desc} ", short_id(task_id))
-    } else {
-        " logs ".to_string()
+    let title = match app.detail.as_ref() {
+        Some(DetailView::TaskLog { task_id }) => {
+            let desc = app
+                .tasks
+                .iter()
+                .find(|t| t.id == *task_id)
+                .map(|t| t.description.as_str())
+                .unwrap_or("");
+            format!(" task {} - {desc} ", short_id(task_id))
+        }
+        Some(DetailView::EnvironmentLog { env_id }) => {
+            let provider = app
+                .environments
+                .iter()
+                .find(|e| e.id == *env_id)
+                .map(|e| e.provider.as_str())
+                .unwrap_or("-");
+            format!(" env {} - {provider} ", short_id(env_id))
+        }
+        None => " logs ".to_string(),
     };
 
     let log = Paragraph::new(app.log_content.as_str())
         .block(Block::default().borders(Borders::ALL).title(title))
-        .scroll((app.log_scroll as u16, 0))
+        .scroll((scroll_top_for_bottom_follow(app.log_scroll, area), 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(log, area);
@@ -378,7 +401,7 @@ fn draw_log_view(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_tui_logs_view(frame: &mut Frame, app: &App, area: Rect) {
     let log = Paragraph::new(app.tui_log_content.as_str())
         .block(Block::default().borders(Borders::ALL).title(" TUI Logs "))
-        .scroll((app.tui_log_scroll as u16, 0))
+        .scroll((scroll_top_for_bottom_follow(app.tui_log_scroll, area), 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(log, area);

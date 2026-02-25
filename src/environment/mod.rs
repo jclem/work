@@ -1,7 +1,7 @@
 mod git_worktree;
 mod script;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::db::Project;
 
@@ -13,10 +13,23 @@ pub struct RunSpec {
 }
 
 pub trait EnvironmentProvider {
-    fn prepare(&self, project: &Project, env_id: &str) -> anyhow::Result<serde_json::Value>;
-    fn update(&self, metadata: &serde_json::Value) -> anyhow::Result<serde_json::Value>;
-    fn claim(&self, metadata: &serde_json::Value) -> anyhow::Result<serde_json::Value>;
-    fn remove(&self, metadata: &serde_json::Value) -> anyhow::Result<()>;
+    fn prepare(
+        &self,
+        project: &Project,
+        env_id: &str,
+        log_path: Option<&Path>,
+    ) -> anyhow::Result<serde_json::Value>;
+    fn update(
+        &self,
+        metadata: &serde_json::Value,
+        log_path: Option<&Path>,
+    ) -> anyhow::Result<serde_json::Value>;
+    fn claim(
+        &self,
+        metadata: &serde_json::Value,
+        log_path: Option<&Path>,
+    ) -> anyhow::Result<serde_json::Value>;
+    fn remove(&self, metadata: &serde_json::Value, log_path: Option<&Path>) -> anyhow::Result<()>;
     fn run(
         &self,
         metadata: &serde_json::Value,

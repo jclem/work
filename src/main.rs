@@ -65,9 +65,13 @@ enum Command {
 
     /// View task logs
     Logs {
-        /// Task ID
-        #[arg(add = ArgValueCompleter::new(complete_task_ids))]
+        /// Task or environment ID
+        #[arg(add = ArgValueCompleter::new(complete_log_ids))]
         id: String,
+
+        /// Treat ID as environment ID (provider lifecycle logs)
+        #[arg(short = 'e', long = "environment")]
+        environment: bool,
 
         /// Follow log output in realtime
         #[arg(short, long)]
@@ -404,6 +408,43 @@ fn complete_task_ids(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
     result.ok().and_then(|r| r.ok()).unwrap_or_default()
 }
 
+fn complete_log_ids(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let mut candidates = complete_task_ids(current);
+    let current = current.to_str().unwrap_or_default().to_owned();
+
+    let env_candidates = std::thread::spawn(move || -> anyhow::Result<Vec<CompletionCandidate>> {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            paths::init(None);
+            let client = client::DaemonClient::new()?;
+            let envs = client.list_environments().await?;
+            let projects = client.list_projects().await?;
+
+            let out = envs
+                .iter()
+                .filter(|e| e.id.starts_with(&current))
+                .map(|e| {
+                    let project = projects
+                        .iter()
+                        .find(|p| p.id == e.project_id)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("-");
+                    CompletionCandidate::new(e.id.to_string())
+                        .help(Some(format!("env: {project} ({})", e.status).into()))
+                })
+                .collect();
+            Ok(out)
+        })
+    })
+    .join()
+    .ok()
+    .and_then(|r| r.ok())
+    .unwrap_or_default();
+
+    candidates.extend(env_candidates);
+    candidates
+}
+
 fn print_env(env: &db::Environment, format: &OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Human => {
@@ -480,6 +521,19 @@ async fn follow_task_logs(client: &client::DaemonClient, task_id: &str) -> anyho
 
     client
         .tail_task_logs(task_id, |chunk| {
+            let _ = std::io::stdout().write_all(chunk);
+        })
+        .await
+}
+
+async fn follow_environment_logs(
+    client: &client::DaemonClient,
+    env_id: &str,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    client
+        .tail_environment_logs(env_id, |chunk| {
             let _ = std::io::stdout().write_all(chunk);
         })
         .await
@@ -800,8 +854,23 @@ async fn run() -> anyhow::Result<()> {
                         }
                     }
                 },
-                Command::Logs { id, follow } => {
-                    if follow {
+                Command::Logs {
+                    id,
+                    environment,
+                    follow,
+                } => {
+                    if environment {
+                        if follow {
+                            follow_environment_logs(&client, &id).await?;
+                        } else {
+                            let log_path = paths::environment_log_path(&id)?;
+                            if !log_path.exists() {
+                                anyhow::bail!("no logs found for environment {id}");
+                            }
+                            let contents = std::fs::read_to_string(&log_path)?;
+                            print!("{contents}");
+                        }
+                    } else if follow {
                         follow_task_logs(&client, &id).await?;
                     } else {
                         let log_path = paths::task_log_path(&id)?;

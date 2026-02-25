@@ -10,7 +10,12 @@ use super::{EnvironmentProvider, RunSpec};
 pub struct GitWorktreeProvider;
 
 impl EnvironmentProvider for GitWorktreeProvider {
-    fn prepare(&self, project: &Project, env_id: &str) -> anyhow::Result<serde_json::Value> {
+    fn prepare(
+        &self,
+        project: &Project,
+        env_id: &str,
+        _log_path: Option<&std::path::Path>,
+    ) -> anyhow::Result<serde_json::Value> {
         let worktree_path = crate::paths::data_dir()?.join("worktrees").join(env_id);
         let branch = format!("work-env-{env_id}");
 
@@ -39,7 +44,11 @@ impl EnvironmentProvider for GitWorktreeProvider {
         }))
     }
 
-    fn update(&self, metadata: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    fn update(
+        &self,
+        metadata: &serde_json::Value,
+        _log_path: Option<&std::path::Path>,
+    ) -> anyhow::Result<serde_json::Value> {
         let worktree_path = metadata["worktree_path"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing worktree_path in metadata"))?;
@@ -67,7 +76,11 @@ impl EnvironmentProvider for GitWorktreeProvider {
         Ok(metadata.clone())
     }
 
-    fn claim(&self, metadata: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    fn claim(
+        &self,
+        metadata: &serde_json::Value,
+        _log_path: Option<&std::path::Path>,
+    ) -> anyhow::Result<serde_json::Value> {
         Ok(metadata.clone())
     }
 
@@ -89,7 +102,11 @@ impl EnvironmentProvider for GitWorktreeProvider {
         })
     }
 
-    fn remove(&self, metadata: &serde_json::Value) -> anyhow::Result<()> {
+    fn remove(
+        &self,
+        metadata: &serde_json::Value,
+        _log_path: Option<&std::path::Path>,
+    ) -> anyhow::Result<()> {
         let worktree_path = metadata["worktree_path"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing worktree_path in metadata"))?;

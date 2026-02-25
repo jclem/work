@@ -324,6 +324,48 @@ impl DaemonClient {
 
         Ok(())
     }
+
+    pub async fn tail_environment_logs(
+        &self,
+        env_id: &str,
+        mut on_chunk: impl FnMut(&[u8]),
+    ) -> anyhow::Result<()> {
+        let stream = UnixStream::connect(&self.socket_path).await.map_err(|e| {
+            anyhow::anyhow!(
+                "could not connect to daemon at {}: {e}\nIs the daemon running? Start it with: work daemon start",
+                self.socket_path.display(),
+            )
+        })?;
+
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+        tokio::spawn(conn);
+
+        let req = hyper::Request::builder()
+            .method(hyper::Method::GET)
+            .uri(format!("/environments/{env_id}/logs"))
+            .header("host", "localhost")
+            .body(Full::new(Bytes::new()))?;
+
+        let res = sender.send_request(req).await?;
+        let status = res.status();
+
+        if !status.is_success() {
+            let body_bytes = res.into_body().collect().await?.to_bytes();
+            let text = String::from_utf8(body_bytes.to_vec())?;
+            anyhow::bail!("{}", extract_error(&text));
+        }
+
+        let mut body = res.into_body();
+        while let Some(frame) = body.frame().await {
+            let frame = frame?;
+            if let Some(data) = frame.data_ref() {
+                on_chunk(data);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn extract_error(body: &str) -> String {

@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::sync::Arc;
 
 use tokio::sync::{Semaphore, oneshot, watch};
@@ -10,6 +11,55 @@ const MAX_CONCURRENT_JOBS: usize = 8;
 const JOB_LEASE_SECONDS: i64 = 30;
 const JOB_LEASE_RENEW_INTERVAL_SECONDS: u64 = 10;
 const RETRY_LIMIT: i64 = 2;
+
+fn env_id_for_lifecycle_job(job: &db::Job) -> Option<&str> {
+    match job.job_type.as_str() {
+        "prepare_environment"
+        | "update_environment"
+        | "claim_environment"
+        | "remove_environment"
+        | "remove_task" => job.payload["env_id"].as_str(),
+        _ => None,
+    }
+}
+
+fn append_environment_lifecycle_log(env_id: &str, line: &str) {
+    let log_path = match crate::paths::environment_log_path(env_id) {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::warn!(env_id = %env_id, error = %e, "failed to build environment log path");
+            return;
+        }
+    };
+
+    if let Some(parent) = log_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(env_id = %env_id, error = %e, "failed to create environment log directory");
+        return;
+    }
+
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(file) => file,
+        Err(e) => {
+            tracing::warn!(env_id = %env_id, error = %e, path = %log_path.display(), "failed to open environment lifecycle log");
+            return;
+        }
+    };
+
+    let ts = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = writeln!(file, "{ts} {line}") {
+        tracing::warn!(env_id = %env_id, error = %e, path = %log_path.display(), "failed to append environment lifecycle log");
+    }
+}
+
+fn environment_log_path(env_id: &str) -> Option<std::path::PathBuf> {
+    crate::paths::environment_log_path(env_id).ok()
+}
 
 pub async fn run(mut shutdown: watch::Receiver<bool>) {
     tracing::info!("job processor started");
@@ -78,12 +128,25 @@ fn spawn_job_lease_heartbeat(job_id: String) -> (oneshot::Sender<()>, tokio::tas
 }
 
 async fn process_job(job: db::Job) {
+    let lifecycle_env_id = env_id_for_lifecycle_job(&job).map(str::to_string);
+    let attempt_number = job.attempt + 1;
+
     tracing::info!(
         id = %job.id,
         job_type = %job.job_type,
         attempt = job.attempt,
         "processing job"
     );
+    if let Some(env_id) = lifecycle_env_id.as_deref() {
+        append_environment_lifecycle_log(
+            env_id,
+            &format!(
+                "job={} attempt={} phase=start",
+                job.job_type, attempt_number
+            ),
+        );
+    }
+
     let (lease_stop_tx, lease_handle) = spawn_job_lease_heartbeat(job.id.clone());
 
     let result = match job.job_type.as_str() {
@@ -103,26 +166,65 @@ async fn process_job(job: db::Job) {
             if let Err(e) = db::mark_job_complete(&job.id) {
                 tracing::error!(id = %job.id, error = %e, "failed to mark job complete");
             }
+            if let Some(env_id) = lifecycle_env_id.as_deref() {
+                append_environment_lifecycle_log(
+                    env_id,
+                    &format!(
+                        "job={} attempt={} phase=complete",
+                        job.job_type, attempt_number
+                    ),
+                );
+            }
         }
         Err(e) => {
             tracing::error!(id = %job.id, error = %e, "job failed");
+            let error_message = e.to_string();
 
             let can_retry = job.attempt < RETRY_LIMIT;
             if can_retry {
                 let delay = retry_delay_seconds(job.attempt);
-                if let Err(requeue_err) = db::requeue_job(&job.id, &e.to_string(), delay) {
+                if let Some(env_id) = lifecycle_env_id.as_deref() {
+                    append_environment_lifecycle_log(
+                        env_id,
+                        &format!(
+                            "job={} attempt={} phase=retrying delay_seconds={} error={}",
+                            job.job_type, attempt_number, delay, error_message
+                        ),
+                    );
+                }
+
+                if let Err(requeue_err) = db::requeue_job(&job.id, &error_message, delay) {
                     tracing::error!(
                         id = %job.id,
                         error = %requeue_err,
                         "failed to requeue failed job"
                     );
-                    let _ = db::mark_job_failed(&job.id, &e.to_string());
+                    if let Some(env_id) = lifecycle_env_id.as_deref() {
+                        append_environment_lifecycle_log(
+                            env_id,
+                            &format!(
+                                "job={} attempt={} phase=retry_requeue_failed error={}",
+                                job.job_type, attempt_number, requeue_err
+                            ),
+                        );
+                    }
+                    let _ = db::mark_job_failed(&job.id, &error_message);
                     apply_terminal_failure_side_effects(&job);
                 }
                 return;
             }
 
-            if let Err(mark_err) = db::mark_job_failed(&job.id, &e.to_string()) {
+            if let Some(env_id) = lifecycle_env_id.as_deref() {
+                append_environment_lifecycle_log(
+                    env_id,
+                    &format!(
+                        "job={} attempt={} phase=failed error={}",
+                        job.job_type, attempt_number, error_message
+                    ),
+                );
+            }
+
+            if let Err(mark_err) = db::mark_job_failed(&job.id, &error_message) {
                 tracing::error!(id = %job.id, error = %mark_err, "failed to mark job failed");
             }
             apply_terminal_failure_side_effects(&job);
@@ -211,13 +313,14 @@ async fn prepare_environment(job: &db::Job) -> anyhow::Result<()> {
 
     let project = db::get_project(&env.project_id)?;
     let provider_name = env.provider.clone();
+    let log_path = environment_log_path(&env_id);
 
     tracing::info!(env_id = %env_id, provider = %provider_name, "preparing environment");
 
     let eid = env_id.clone();
     let prepared_metadata = tokio::task::spawn_blocking(move || {
         let provider = crate::environment::get_provider(&provider_name)?;
-        provider.prepare(&project, &eid)
+        provider.prepare(&project, &eid, log_path.as_deref())
     })
     .await??;
 
@@ -226,9 +329,10 @@ async fn prepare_environment(job: &db::Job) -> anyhow::Result<()> {
     let final_metadata = if should_claim {
         let provider_name = env.provider.clone();
         let meta = prepared_metadata.clone();
+        let log_path = environment_log_path(&env_id);
         tokio::task::spawn_blocking(move || {
             let provider = crate::environment::get_provider(&provider_name)?;
-            provider.claim(&meta)
+            provider.claim(&meta, log_path.as_deref())
         })
         .await??
     } else {
@@ -271,9 +375,10 @@ async fn update_environment(job: &db::Job) -> anyhow::Result<()> {
 
     let provider_name = env.provider.clone();
     let metadata = env.metadata.clone();
+    let log_path = environment_log_path(&env_id);
     let new_metadata = tokio::task::spawn_blocking(move || {
         let provider = crate::environment::get_provider(&provider_name)?;
-        provider.update(&metadata)
+        provider.update(&metadata, log_path.as_deref())
     })
     .await??;
 
@@ -302,9 +407,10 @@ async fn claim_environment(job: &db::Job) -> anyhow::Result<()> {
 
     let provider_name = env.provider.clone();
     let metadata = env.metadata.clone();
+    let log_path = environment_log_path(&env_id);
     let new_metadata = tokio::task::spawn_blocking(move || {
         let provider = crate::environment::get_provider(&provider_name)?;
-        provider.claim(&metadata)
+        provider.claim(&metadata, log_path.as_deref())
     })
     .await??;
 
@@ -341,12 +447,13 @@ async fn remove_environment(job: &db::Job) -> anyhow::Result<()> {
     };
     let provider_name = env.provider.clone();
     let metadata = env.metadata.clone();
+    let log_path = environment_log_path(&env_id);
 
     tracing::info!(env_id = %env_id, provider = %provider_name, "removing environment");
 
     tokio::task::spawn_blocking(move || {
         let provider = crate::environment::get_provider(&provider_name)?;
-        provider.remove(&metadata)
+        provider.remove(&metadata, log_path.as_deref())
     })
     .await??;
 
@@ -371,9 +478,10 @@ async fn remove_task(job: &db::Job) -> anyhow::Result<()> {
     if let Ok(env) = db::get_environment(&env_id) {
         let provider_name = env.provider.clone();
         let metadata = env.metadata.clone();
+        let log_path = environment_log_path(&env_id);
         tokio::task::spawn_blocking(move || {
             let provider = crate::environment::get_provider(&provider_name)?;
-            provider.remove(&metadata)
+            provider.remove(&metadata, log_path.as_deref())
         })
         .await??;
     }

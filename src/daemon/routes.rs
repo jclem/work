@@ -387,6 +387,35 @@ pub async fn tail_task_logs(Path(id): Path<String>) -> impl IntoResponse {
     (StatusCode::OK, body).into_response()
 }
 
+pub async fn tail_environment_logs(Path(id): Path<String>) -> impl IntoResponse {
+    if let Err(e) = crate::db::get_environment(&id) {
+        let msg = e.to_string();
+        let status = if msg.contains("not found") {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        return (status, Json(json!({"error": msg}))).into_response();
+    }
+
+    let log_path = match crate::paths::environment_log_path(&id) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let (tx, rx) = mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(64);
+    tokio::spawn(tail_environment_log_to_channel(id, log_path, tx));
+    let stream = ReceiverStream::new(rx);
+    let body = Body::from_stream(stream);
+    (StatusCode::OK, body).into_response()
+}
+
 async fn tail_log_to_channel(
     task_id: String,
     log_path: std::path::PathBuf,
@@ -430,6 +459,53 @@ async fn tail_log_to_channel(
                 }
             }
             return; // dropping tx closes the stream
+        }
+
+        tick = tick.wrapping_add(1);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+async fn tail_environment_log_to_channel(
+    env_id: String,
+    log_path: std::path::PathBuf,
+    tx: mpsc::Sender<Result<axum::body::Bytes, std::io::Error>>,
+) {
+    use std::io::{Read, Seek};
+
+    let mut pos = 0u64;
+    let mut tick: u64 = 0;
+
+    loop {
+        if let Ok(metadata) = std::fs::metadata(&log_path)
+            && metadata.len() > pos
+            && let Ok(mut f) = std::fs::File::open(&log_path)
+            && f.seek(std::io::SeekFrom::Start(pos)).is_ok()
+        {
+            let mut buf = vec![0u8; (metadata.len() - pos) as usize];
+            if f.read_exact(&mut buf).is_ok() {
+                pos = metadata.len();
+                if tx.send(Ok(axum::body::Bytes::from(buf))).await.is_err() {
+                    return;
+                }
+            }
+        }
+
+        if tick.is_multiple_of(10) {
+            let env_gone = crate::db::get_environment(&env_id).is_err();
+            if env_gone {
+                if let Ok(metadata) = std::fs::metadata(&log_path)
+                    && metadata.len() > pos
+                    && let Ok(mut f) = std::fs::File::open(&log_path)
+                    && f.seek(std::io::SeekFrom::Start(pos)).is_ok()
+                {
+                    let mut buf = vec![0u8; (metadata.len() - pos) as usize];
+                    if f.read_exact(&mut buf).is_ok() {
+                        let _ = tx.send(Ok(axum::body::Bytes::from(buf))).await;
+                    }
+                }
+                return;
+            }
         }
 
         tick = tick.wrapping_add(1);
