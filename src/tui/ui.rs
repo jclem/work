@@ -85,14 +85,16 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             None => match app.tab {
                 Tab::Tasks => match app.task_view_mode {
                     TaskViewMode::Flat => {
-                        " Tab: tabs | j/k: navigate | Enter: logs | D: delete | `: flat/tree | q: quit"
+                        " Tab: tabs | j/k: navigate | Enter: logs | d: delete | `: flat/tree | q: quit"
                     }
                     TaskViewMode::Tree => {
-                        " Tab: tabs | j/k: navigate | h/l: collapse/expand | Enter: logs | D: delete | `: flat/tree | q: quit"
+                        " Tab: tabs | j/k: navigate | h/l: collapse/expand | Enter: logs | d: delete | `: flat/tree | q: quit"
                     }
                 },
-                Tab::Projects => " Tab: tabs | j/k: navigate | D: delete | q: quit",
-                Tab::Environments => " Tab: tabs | j/k: navigate | Enter: logs | q: quit",
+                Tab::Projects => " Tab: tabs | j/k: navigate | d: delete | q: quit",
+                Tab::Environments => {
+                    " Tab: tabs | j/k: navigate | Enter: logs | d: delete | q: quit"
+                }
                 Tab::Daemon => " Tab: tabs | q: quit",
                 Tab::Logs => {
                     " Tab: tabs | j/k: scroll | g/G: top/bottom | d/u: half-page | q: quit"
@@ -408,22 +410,55 @@ fn draw_tui_logs_view(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_confirm_dialog(frame: &mut Frame, app: &App) {
-    let text = match app.confirm {
-        Some(Confirm::DeleteTask { ref task_id }) => {
-            format!("Delete task {}? (y/n)", short_id(task_id))
+    let (target_label, target_value) = match app.confirm {
+        Some(Confirm::DeleteTask { ref task_id }) => ("Task", short_id(task_id).to_string()),
+        Some(Confirm::DeleteProject { ref project_name }) => ("Project", project_name.clone()),
+        Some(Confirm::DeleteEnvironment { ref env_id }) => {
+            ("Environment", short_id(env_id).to_string())
         }
-        Some(Confirm::DeleteProject { ref project_name }) => {
-            format!("Delete project {project_name}? (y/n)")
+        None => {
+            return;
         }
-        None => return,
     };
 
-    let area = centered_rect(40, 5, frame.area());
+    let area = centered_rect(62, 9, frame.area());
     frame.render_widget(Clear, area);
 
-    let dialog = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(" Confirm "))
-        .style(Style::default().fg(Color::Yellow));
+    let body = vec![
+        Line::from(vec![Span::styled(
+            format!("Delete {target_label}?"),
+            Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::default(),
+        Line::from(vec![
+            Span::styled(
+                format!("{target_label}: "),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                target_value,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::default(),
+        Line::from(vec![Span::styled(
+            "Press y to confirm, n or Esc to cancel.",
+            Style::default().fg(Color::Gray),
+        )]),
+    ];
+
+    let dialog = Paragraph::new(body).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Confirm Delete ")
+            .border_style(Style::default().fg(Color::LightRed)),
+    );
 
     frame.render_widget(dialog, area);
 }

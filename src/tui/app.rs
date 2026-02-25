@@ -64,6 +64,7 @@ pub enum DetailView {
 pub enum Confirm {
     DeleteTask { task_id: String },
     DeleteProject { project_name: String },
+    DeleteEnvironment { env_id: String },
 }
 
 pub struct App {
@@ -484,6 +485,13 @@ impl App {
                     });
                 }
             }
+            Tab::Environments => {
+                if let Some(env) = self.environments.get(self.selected) {
+                    self.confirm = Some(Confirm::DeleteEnvironment {
+                        env_id: env.id.clone(),
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -500,6 +508,13 @@ impl App {
             Some(Confirm::DeleteProject { project_name }) => {
                 let name = project_name.clone();
                 match client.delete_project(&name).await {
+                    Ok(()) => self.error = None,
+                    Err(e) => self.error = Some(format!("delete failed: {e}")),
+                }
+            }
+            Some(Confirm::DeleteEnvironment { env_id }) => {
+                let env_id = env_id.clone();
+                match client.remove_environment(&env_id).await {
                     Ok(()) => self.error = None,
                     Err(e) => self.error = Some(format!("delete failed: {e}")),
                 }
