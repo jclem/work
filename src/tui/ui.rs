@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs,
 use super::app::{App, Confirm, DetailView, Tab, TaskViewMode, TreeRow};
 
 const SPINNER_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
+const TITLE_ICON: &str = "❀";
 
 pub fn draw(frame: &mut Frame, app: &App, tick_count: usize) {
     let area = frame.area();
@@ -47,6 +48,19 @@ pub fn draw(frame: &mut Frame, app: &App, tick_count: usize) {
 }
 
 fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let bar = Layout::horizontal([Constraint::Length(3), Constraint::Min(0)]).split(area);
+    let icon = Paragraph::new(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            TITLE_ICON,
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    frame.render_widget(icon, bar[0]);
+
     let titles: Vec<Span> = Tab::ALL
         .iter()
         .map(|t| {
@@ -72,7 +86,7 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         );
 
-    frame.render_widget(tabs, area);
+    frame.render_widget(tabs, bar[1]);
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
