@@ -34,6 +34,14 @@ fn cleanup(runtime_dir: &Path) {
 }
 
 pub async fn start(force: bool) -> anyhow::Result<()> {
+    tracing::info!(
+        config = %crate::paths::config_dir()?.display(),
+        data = %crate::paths::data_dir()?.display(),
+        state = %crate::paths::state_dir()?.display(),
+        runtime = %crate::paths::runtime_dir()?.display(),
+        "starting daemon"
+    );
+
     let runtime_dir = crate::paths::runtime_dir()?;
     fs::create_dir_all(&runtime_dir)?;
 
