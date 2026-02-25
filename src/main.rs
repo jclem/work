@@ -127,7 +127,7 @@ enum EnvironmentCommand {
         project: Option<String>,
 
         /// Provider (uses config default if not specified)
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_env_providers))]
         provider: Option<String>,
 
         /// Output format
@@ -141,7 +141,7 @@ enum EnvironmentCommand {
         project: Option<String>,
 
         /// Provider (uses config default if not specified)
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_env_providers))]
         provider: Option<String>,
 
         /// Output format
@@ -165,7 +165,7 @@ enum EnvironmentCommand {
         id: Option<String>,
 
         /// Claim next available for this provider (required if no id)
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_env_providers))]
         provider: Option<String>,
 
         /// Project name (required if no id)
@@ -219,11 +219,11 @@ enum TaskCommand {
         project: Option<String>,
 
         /// Task provider (uses config default if not specified)
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_task_providers))]
         provider: Option<String>,
 
         /// Environment provider (uses config default if not specified)
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_env_providers))]
         env_provider: Option<String>,
 
         /// Follow task logs after creation
@@ -290,6 +290,29 @@ async fn main() {
 
         std::process::exit(1);
     }
+}
+
+fn complete_env_providers(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let current = current.to_str().unwrap_or_default();
+    paths::init(None);
+    environment::list_providers()
+        .into_iter()
+        .filter(|p| p.starts_with(current))
+        .map(|p| CompletionCandidate::new(p))
+        .collect()
+}
+
+fn complete_task_providers(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let current = current.to_str().unwrap_or_default();
+    paths::init(None);
+    config::load()
+        .ok()
+        .and_then(|c| c.tasks.map(|t| t.providers.into_keys().collect::<Vec<_>>()))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.starts_with(current))
+        .map(|p| CompletionCandidate::new(p))
+        .collect()
 }
 
 fn complete_env_ids(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
@@ -653,7 +676,7 @@ async fn run() -> anyhow::Result<()> {
                     }
                     EnvironmentCommand::Provider { command } => match command {
                         ProviderCommand::List => {
-                            for name in environment::list_providers() {
+                            for name in &environment::list_providers() {
                                 println!("{name}");
                             }
                         }
