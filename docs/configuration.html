@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration &mdash; work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+<aside class="sidebar">
+  <div class="logo">work</div>
+  <div class="version">v0.1.4</div>
+  <nav>
+    <ul>
+      <li>
+        <div class="section-label">Guide</div>
+        <ul>
+          <li><a href="index.html">Overview</a></li>
+          <li><a href="getting-started.html">Getting started</a></li>
+          <li><a href="configuration.html" class="active">Configuration</a></li>
+          <li><a href="providers.html">Custom providers</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Reference</div>
+        <ul>
+          <li><a href="commands.html">Commands</a></li>
+          <li><a href="architecture.html">Architecture</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Links</div>
+        <ul>
+          <li><a href="https://github.com/jclem/work">GitHub</a></li>
+        </ul>
+      </li>
+    </ul>
+  </nav>
+</aside>
+
+<main class="main">
+
+<h1>Configuration</h1>
+
+<p>
+Configuration lives at <code>$XDG_CONFIG_HOME/work/config.toml</code>,
+typically <code>~/.config/work/config.toml</code>. Open it in your
+editor with:
+</p>
+
+<pre><code>work config edit</code></pre>
+
+<h2>Full example</h2>
+
+<pre><code># Default providers used when --provider / --env-provider
+# are not specified on the command line.
+default-task-provider = "claude"
+default-environment-provider = "git-worktree"
+
+[daemon]
+debug = false
+
+# Task providers define what command runs in an environment.
+# The {task_description} placeholder is replaced with the
+# task description.
+
+[tasks.providers.claude]
+type = "command"
+command = "claude"
+args = ["-p", "{task_description}"]
+
+[tasks.providers.codex]
+type = "command"
+command = "codex"
+args = ["{task_description}"]
+
+[tasks.providers.test-runner]
+type = "command"
+command = "make"
+args = ["test"]
+
+# Custom environment providers. These are external scripts
+# that implement the provider protocol.
+
+[environments.providers.sandbox]
+type = "script"
+command = "/usr/local/bin/sandbox-provider.sh"</code></pre>
+
+<h2>Reference</h2>
+
+<h3>Top-level keys</h3>
+
+<table>
+  <thead>
+    <tr><th>Key</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>default-task-provider</code></td>
+      <td>string</td>
+      <td>Name of the task provider to use when <code>--provider</code> is omitted.</td>
+    </tr>
+    <tr>
+      <td><code>default-environment-provider</code></td>
+      <td>string</td>
+      <td>Name of the environment provider to use when <code>--provider</code> / <code>--env-provider</code> is omitted.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>[daemon]</h3>
+
+<table>
+  <thead>
+    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>debug</code></td>
+      <td>bool</td>
+      <td><code>false</code></td>
+      <td>Enable debug-level logging in the daemon. Can also be set with <code>--debug</code> or <code>WORK_DEBUG=1</code>.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>[tasks.providers.&lt;name&gt;]</h3>
+
+<p>Each task provider defines a command to execute inside an environment.</p>
+
+<table>
+  <thead>
+    <tr><th>Key</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>type</code></td>
+      <td>string</td>
+      <td>Must be <code>"command"</code>.</td>
+    </tr>
+    <tr>
+      <td><code>command</code></td>
+      <td>string</td>
+      <td>The program to run.</td>
+    </tr>
+    <tr>
+      <td><code>args</code></td>
+      <td>string[]</td>
+      <td>Arguments passed to the command. <code>{task_description}</code> is replaced with the task description.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>[environments.providers.&lt;name&gt;]</h3>
+
+<p>Custom environment providers are external scripts. See <a href="providers.html">Custom providers</a>.</p>
+
+<table>
+  <thead>
+    <tr><th>Key</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>type</code></td>
+      <td>string</td>
+      <td>Must be <code>"script"</code>.</td>
+    </tr>
+    <tr>
+      <td><code>command</code></td>
+      <td>string</td>
+      <td>Path to the provider script.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>File locations</h2>
+
+<p>
+<code>work</code> follows the
+<a href="https://specifications.freedesktop.org/basedir-spec/latest/">XDG Base Directory Specification</a>.
+All paths can be overridden with <code>--work-home PATH</code> or
+<code>WORK_HOME=PATH</code>, which places everything under a single directory.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Purpose</th><th>Default path</th><th>Contents</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Config</td>
+      <td><code>~/.config/work/</code></td>
+      <td><code>config.toml</code></td>
+    </tr>
+    <tr>
+      <td>Data</td>
+      <td><code>~/.local/share/work/</code></td>
+      <td>SQLite database, git worktrees, task logs</td>
+    </tr>
+    <tr>
+      <td>Runtime</td>
+      <td><code>$XDG_RUNTIME_DIR/work/</code></td>
+      <td>Unix socket (<code>work.sock</code>), PID file</td>
+    </tr>
+    <tr>
+      <td>State</td>
+      <td><code>~/.local/state/work/</code></td>
+      <td>Daemon stdout/stderr logs (launchd)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Environment variables</h2>
+
+<table>
+  <thead>
+    <tr><th>Variable</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>WORK_HOME</code></td>
+      <td>Override all paths to subdirectories of this path.</td>
+    </tr>
+    <tr>
+      <td><code>WORK_DEBUG</code></td>
+      <td>Set to <code>1</code> to enable debug logging.</td>
+    </tr>
+    <tr>
+      <td><code>EDITOR</code></td>
+      <td>Used by <code>work config edit</code>.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="footer">MIT License</div>
+
+</main>
+
+</div>
+</body>
+</html>

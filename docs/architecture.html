@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture &mdash; work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+<aside class="sidebar">
+  <div class="logo">work</div>
+  <div class="version">v0.1.4</div>
+  <nav>
+    <ul>
+      <li>
+        <div class="section-label">Guide</div>
+        <ul>
+          <li><a href="index.html">Overview</a></li>
+          <li><a href="getting-started.html">Getting started</a></li>
+          <li><a href="configuration.html">Configuration</a></li>
+          <li><a href="providers.html">Custom providers</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Reference</div>
+        <ul>
+          <li><a href="commands.html">Commands</a></li>
+          <li><a href="architecture.html" class="active">Architecture</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Links</div>
+        <ul>
+          <li><a href="https://github.com/jclem/work">GitHub</a></li>
+        </ul>
+      </li>
+    </ul>
+  </nav>
+</aside>
+
+<main class="main">
+
+<h1>Architecture</h1>
+
+<h2>Overview</h2>
+
+<p>
+<code>work</code> is a client-daemon system. The daemon runs persistently
+and does all the real work. The CLI and TUI are thin clients that
+communicate with it.
+</p>
+
+<pre><code>  ┌──────────┐      HTTP/Unix socket      ┌────────────┐
+  │ work cli │ ──────────────────────────▶ │   daemon   │
+  │ work tui │ ◀────────────────────────── │            │
+  └──────────┘           SSE               │  ┌──────┐  │
+                                           │  │ jobs │  │
+                                           │  └──────┘  │
+                                           │  ┌──────┐  │
+                                           │  │sqlite│  │
+                                           │  └──────┘  │
+                                           └────────────┘</code></pre>
+
+<h2>Daemon</h2>
+
+<p>
+The daemon is an <a href="https://github.com/tokio-rs/axum">Axum</a>
+HTTP server listening on a Unix socket. It exposes a REST API for
+managing projects, environments, and tasks.
+</p>
+
+<p>Key components:</p>
+
+<ul>
+  <li><strong>HTTP routes</strong> &mdash; CRUD for projects, environments, tasks</li>
+  <li><strong>Job processor</strong> &mdash; polls for pending jobs every 100ms, spawns async tasks</li>
+  <li><strong>Event broadcaster</strong> &mdash; notifies connected clients of state changes via SSE</li>
+  <li><strong>SQLite database</strong> &mdash; stores all persistent state</li>
+</ul>
+
+<h2>Job queue</h2>
+
+<p>
+Long-running operations (preparing environments, running tasks) are
+executed asynchronously via a job queue stored in SQLite. When you
+create a task, the daemon:
+</p>
+
+<ol>
+  <li>Inserts a <code>run_task</code> job into the database</li>
+  <li>The job processor picks it up and claims a pooled environment (or creates one)</li>
+  <li>The environment provider's <code>claim</code> action is called</li>
+  <li>The task provider command is resolved and executed</li>
+  <li>Output is captured to a log file</li>
+  <li>The task status is updated to <code>complete</code> or <code>failed</code></li>
+</ol>
+
+<h2>Data model</h2>
+
+<h3>Projects</h3>
+
+<p>A project is a named reference to a directory (typically a git repository).</p>
+
+<table>
+  <thead><tr><th>Field</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>id</code></td><td>UUIDv7 (base62-encoded)</td></tr>
+    <tr><td><code>name</code></td><td>Unique project name</td></tr>
+    <tr><td><code>path</code></td><td>Absolute path to the project directory</td></tr>
+  </tbody>
+</table>
+
+<h3>Environments</h3>
+
+<p>An environment is an isolated workspace created by a provider.</p>
+
+<table>
+  <thead><tr><th>Field</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>id</code></td><td>UUIDv7 (base62-encoded)</td></tr>
+    <tr><td><code>project_id</code></td><td>Associated project</td></tr>
+    <tr><td><code>provider</code></td><td>Provider name (e.g. <code>git-worktree</code>)</td></tr>
+    <tr><td><code>status</code></td><td><code>preparing</code> → <code>pool</code> → <code>in_use</code> → <code>removing</code></td></tr>
+    <tr><td><code>metadata</code></td><td>JSON blob from the provider</td></tr>
+  </tbody>
+</table>
+
+<h3>Tasks</h3>
+
+<p>A task is a unit of work executed in an environment.</p>
+
+<table>
+  <thead><tr><th>Field</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>id</code></td><td>UUIDv7 (base62-encoded)</td></tr>
+    <tr><td><code>project_id</code></td><td>Associated project</td></tr>
+    <tr><td><code>environment_id</code></td><td>Assigned environment (set when task starts)</td></tr>
+    <tr><td><code>provider</code></td><td>Task provider name</td></tr>
+    <tr><td><code>description</code></td><td>What the task should do</td></tr>
+    <tr><td><code>status</code></td><td><code>pending</code> → <code>started</code> → <code>complete</code> | <code>failed</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Jobs</h3>
+
+<p>Internal job queue for async operations.</p>
+
+<table>
+  <thead><tr><th>Field</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>id</code></td><td>UUIDv7 (base62-encoded)</td></tr>
+    <tr><td><code>type</code></td><td><code>prepare_environment</code> | <code>remove_environment</code> | <code>run_task</code></td></tr>
+    <tr><td><code>payload</code></td><td>JSON with job-specific data</td></tr>
+    <tr><td><code>status</code></td><td><code>pending</code> → <code>running</code> → <code>complete</code> | <code>failed</code></td></tr>
+  </tbody>
+</table>
+
+<h2>Event streaming</h2>
+
+<p>
+The daemon broadcasts events to connected clients via Server-Sent Events
+on the <code>/events</code> endpoint. The TUI and <code>work logs --follow</code>
+use this to receive real-time updates.
+</p>
+
+<p>Event types:</p>
+
+<ul>
+  <li><code>Connected</code> &mdash; initial connection established</li>
+  <li><code>Updated</code> &mdash; database state changed</li>
+  <li><code>Disconnected</code> &mdash; connection lost</li>
+</ul>
+
+<h2>Task log streaming</h2>
+
+<p>
+Task stdout and stderr are written to
+<code>~/.local/share/work/logs/tasks/{task_id}.log</code>.
+The <code>/tasks/{id}/logs</code> endpoint streams the log file in
+real time, following until the task reaches a terminal state.
+</p>
+
+<h2>Environment lifecycle</h2>
+
+<pre><code>  prepare ──▶ pool ──▶ claim ──▶ in_use ──▶ remove
+                │                              ▲
+                └──────── update ──────────────┘
+                   (refresh pooled env)</code></pre>
+
+<p>
+When a task is created, it either claims an available pooled environment
+or creates and claims a new one in a single operation. The environment
+stays <code>in_use</code> until the task and environment are explicitly
+removed.
+</p>
+
+<h2>File layout</h2>
+
+<pre><code>~/.config/work/
+  config.toml
+
+~/.local/share/work/
+  database.sqlite3
+  worktrees/
+    {env_id}/              # git worktrees
+  logs/
+    tasks/
+      {task_id}.log        # task output
+
+$XDG_RUNTIME_DIR/work/
+  work.sock                # Unix socket
+  work.pid                 # daemon PID
+
+~/.local/state/work/
+  daemon.out.log           # launchd stdout
+  daemon.err.log           # launchd stderr</code></pre>
+
+<h2>IDs</h2>
+
+<p>
+All IDs are UUIDv7 values encoded as base62 strings (22 alphanumeric
+characters). UUIDv7 is time-ordered, so IDs sort chronologically.
+</p>
+
+<div class="footer">MIT License</div>
+
+</main>
+
+</div>
+</body>
+</html>

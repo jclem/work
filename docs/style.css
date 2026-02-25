@@ -1,0 +1,378 @@
+/* --------------------------------------------------------
+   work — documentation stylesheet
+   Stark, readable, monospace. Light and dark.
+   -------------------------------------------------------- */
+
+:root {
+  --font: "Berkeley Mono", "SF Mono", "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  --measure: 68ch;
+  --line: 1.6;
+  --gap: 1.5rem;
+  --gap-lg: 3rem;
+  --radius: 0;
+
+  /* light */
+  --fg: #111;
+  --fg-dim: #666;
+  --fg-code: #1a1a1a;
+  --bg: #fdfdfd;
+  --bg-code: #f2f2f2;
+  --bg-nav: #f7f7f7;
+  --border: #d4d4d4;
+  --border-light: #e8e8e8;
+  --accent: #111;
+  --link: #111;
+  --link-hover: #444;
+  --selection: rgba(0, 0, 0, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e0e0e0;
+    --fg-dim: #888;
+    --fg-code: #d4d4d4;
+    --bg: #111;
+    --bg-code: #1a1a1a;
+    --bg-nav: #161616;
+    --border: #333;
+    --border-light: #252525;
+    --accent: #e0e0e0;
+    --link: #e0e0e0;
+    --link-hover: #aaa;
+    --selection: rgba(255, 255, 255, 0.08);
+  }
+}
+
+/* ---- reset ---- */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+::selection {
+  background: var(--selection);
+}
+
+/* ---- base ---- */
+
+html {
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font);
+  line-height: var(--line);
+  color: var(--fg);
+  background: var(--bg);
+}
+
+/* ---- layout ---- */
+
+.page {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: 220px;
+  flex-shrink: 0;
+  padding: var(--gap-lg) var(--gap);
+  border-right: 1px solid var(--border-light);
+  background: var(--bg-nav);
+  overflow-y: auto;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  padding: var(--gap-lg) var(--gap-lg);
+  max-width: calc(var(--measure) + var(--gap-lg) * 2);
+}
+
+/* ---- sidebar ---- */
+
+.sidebar .logo {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.25rem;
+}
+
+.sidebar .version {
+  font-size: 0.75rem;
+  color: var(--fg-dim);
+  margin-bottom: var(--gap-lg);
+}
+
+.sidebar nav ul {
+  list-style: none;
+}
+
+.sidebar nav > ul > li {
+  margin-bottom: var(--gap);
+}
+
+.sidebar nav .section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+  margin-bottom: 0.35rem;
+}
+
+.sidebar nav a {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--fg-dim);
+  text-decoration: none;
+  padding: 0.1rem 0;
+  transition: color 0.1s;
+}
+
+.sidebar nav a:hover,
+.sidebar nav a.active {
+  color: var(--fg);
+}
+
+/* ---- typography ---- */
+
+h1, h2, h3, h4 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin-bottom: var(--gap);
+  padding-bottom: var(--gap);
+  border-bottom: 1px solid var(--border);
+}
+
+h2 {
+  font-size: 1.1rem;
+  margin-top: var(--gap-lg);
+  margin-bottom: 0.75rem;
+}
+
+h3 {
+  font-size: 0.95rem;
+  margin-top: var(--gap);
+  margin-bottom: 0.5rem;
+}
+
+p, ul, ol, table, .note {
+  margin-bottom: var(--gap);
+}
+
+a {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  text-decoration-thickness: 1px;
+}
+
+a:hover {
+  color: var(--link-hover);
+}
+
+strong {
+  font-weight: 700;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--border-light);
+  margin: var(--gap-lg) 0;
+}
+
+/* ---- code ---- */
+
+code {
+  font-family: var(--font);
+  font-size: 0.9em;
+  color: var(--fg-code);
+  background: var(--bg-code);
+  padding: 0.15em 0.35em;
+  border-radius: 2px;
+}
+
+pre {
+  margin-bottom: var(--gap);
+  padding: var(--gap);
+  background: var(--bg-code);
+  border: 1px solid var(--border-light);
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+pre code {
+  padding: 0;
+  background: none;
+  font-size: 0.85rem;
+}
+
+/* ---- tables ---- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-light);
+}
+
+th {
+  font-weight: 700;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+  border-bottom-color: var(--border);
+}
+
+/* ---- lists ---- */
+
+ul, ol {
+  padding-left: 1.5rem;
+}
+
+li {
+  margin-bottom: 0.25rem;
+}
+
+li code {
+  font-size: 0.85em;
+}
+
+/* ---- callouts ---- */
+
+.note {
+  padding: var(--gap);
+  border: 1px solid var(--border-light);
+  border-left: 3px solid var(--border);
+  background: var(--bg-code);
+  font-size: 0.85rem;
+}
+
+.note p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---- definition lists ---- */
+
+dl {
+  margin-bottom: var(--gap);
+}
+
+dt {
+  font-weight: 700;
+  margin-top: 0.75rem;
+}
+
+dt:first-child {
+  margin-top: 0;
+}
+
+dd {
+  color: var(--fg-dim);
+  margin-left: 0;
+  margin-bottom: 0.25rem;
+}
+
+/* ---- command reference ---- */
+
+.cmd-list {
+  list-style: none;
+  padding: 0;
+}
+
+.cmd-list li {
+  margin-bottom: 0.5rem;
+  display: flex;
+  gap: 1rem;
+}
+
+.cmd-list .cmd {
+  flex-shrink: 0;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.cmd-list .desc {
+  color: var(--fg-dim);
+}
+
+/* ---- footer ---- */
+
+.footer {
+  margin-top: var(--gap-lg);
+  padding-top: var(--gap);
+  border-top: 1px solid var(--border-light);
+  font-size: 0.75rem;
+  color: var(--fg-dim);
+}
+
+/* ---- lightbox ---- */
+
+.lightbox-thumb {
+  cursor: zoom-in;
+}
+
+.lightbox-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.7);
+  justify-content: center;
+  align-items: center;
+  cursor: zoom-out;
+}
+
+.lightbox-overlay.open {
+  display: flex;
+}
+
+.lightbox-overlay img {
+  max-width: 80%;
+  max-height: 80%;
+  border: 1px solid var(--border);
+}
+
+/* ---- responsive ---- */
+
+@media (max-width: 768px) {
+  .page {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    position: static;
+    height: auto;
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border-light);
+    padding: var(--gap);
+  }
+
+  .sidebar .version {
+    margin-bottom: var(--gap);
+  }
+
+  .sidebar nav > ul > li {
+    margin-bottom: 0.5rem;
+  }
+
+  .main {
+    padding: var(--gap);
+  }
+}
