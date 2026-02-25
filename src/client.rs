@@ -7,6 +7,12 @@ use tokio::net::UnixStream;
 
 use crate::db::{Environment, Project, Task};
 
+pub enum DaemonEvent {
+    Connected,
+    Updated,
+    Disconnected,
+}
+
 pub struct DaemonClient {
     socket_path: PathBuf,
 }
@@ -203,6 +209,72 @@ impl DaemonClient {
         if !status.is_success() {
             anyhow::bail!("{}", extract_error(&body));
         }
+        Ok(())
+    }
+
+    pub fn subscribe_events(&self) -> tokio::sync::mpsc::Receiver<DaemonEvent> {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let socket_path = self.socket_path.clone();
+
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = Self::stream_events(&socket_path, &tx).await {
+                    tracing::debug!(error = %e, "event stream disconnected, reconnecting");
+                }
+
+                // Notify that the daemon is disconnected.
+                if tx.send(DaemonEvent::Disconnected).await.is_err() {
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+                if tx.is_closed() {
+                    break;
+                }
+            }
+        });
+
+        rx
+    }
+
+    async fn stream_events(
+        socket_path: &std::path::Path,
+        tx: &tokio::sync::mpsc::Sender<DaemonEvent>,
+    ) -> anyhow::Result<()> {
+        let stream = UnixStream::connect(socket_path).await?;
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+        tokio::spawn(conn);
+
+        let req = hyper::Request::builder()
+            .method(hyper::Method::GET)
+            .uri("/events")
+            .header("host", "localhost")
+            .body(Full::new(Bytes::new()))?;
+
+        let res = sender.send_request(req).await?;
+
+        if !res.status().is_success() {
+            anyhow::bail!("event stream returned {}", res.status());
+        }
+
+        // Signal a poll on connect so the TUI refreshes.
+        if tx.send(DaemonEvent::Connected).await.is_err() {
+            return Ok(());
+        }
+
+        let mut body = res.into_body();
+        while let Some(frame) = body.frame().await {
+            let frame = frame?;
+            if let Some(data) = frame.data_ref()
+                && !data.is_empty()
+                && tx.send(DaemonEvent::Updated).await.is_err()
+            {
+                return Ok(());
+            }
+        }
+
         Ok(())
     }
 

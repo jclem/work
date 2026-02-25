@@ -27,7 +27,7 @@ pub fn reset() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 pub struct Project {
     pub id: String,
     pub name: String,
@@ -137,6 +137,37 @@ pub fn create_environment(
     get_environment(id)
 }
 
+pub fn create_preparing_environment(
+    id: &str,
+    project_id: &str,
+    provider: &str,
+) -> Result<Environment, anyhow::Error> {
+    let conn = connect()?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO environments (id, project_id, provider, status, metadata, created_at, updated_at) VALUES (?1, ?2, ?3, 'preparing', '{}', ?4, ?5)",
+        rusqlite::params![id, project_id, provider, &now, &now],
+    )?;
+    get_environment(id)
+}
+
+pub fn finish_preparing_environment(
+    id: &str,
+    metadata: &serde_json::Value,
+) -> Result<(), anyhow::Error> {
+    let conn = connect()?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let metadata_str = serde_json::to_string(metadata)?;
+    let rows = conn.execute(
+        "UPDATE environments SET status = 'pool', metadata = ?1, updated_at = ?2 WHERE id = ?3 AND status = 'preparing'",
+        rusqlite::params![metadata_str, &now, id],
+    )?;
+    if rows == 0 {
+        anyhow::bail!("environment {id} is not in preparing status");
+    }
+    Ok(())
+}
+
 pub fn get_environment(id: &str) -> Result<Environment, anyhow::Error> {
     let conn = connect()?;
     let env = conn.query_row(
@@ -168,6 +199,19 @@ pub fn update_environment_metadata(
     let rows = conn.execute(
         "UPDATE environments SET metadata = ?1, updated_at = ?2 WHERE id = ?3",
         rusqlite::params![metadata_str, &now, id],
+    )?;
+    if rows == 0 {
+        anyhow::bail!("environment not found: {id}");
+    }
+    Ok(())
+}
+
+pub fn update_environment_status(id: &str, status: &str) -> Result<(), anyhow::Error> {
+    let conn = connect()?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let rows = conn.execute(
+        "UPDATE environments SET status = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![status, &now, id],
     )?;
     if rows == 0 {
         anyhow::bail!("environment not found: {id}");
@@ -293,28 +337,15 @@ pub fn list_tasks() -> Result<Vec<Task>, anyhow::Error> {
     Ok(tasks)
 }
 
-pub fn delete_task_and_environment(task_id: &str) -> Result<(), anyhow::Error> {
-    let mut conn = connect()?;
-    let env_id: Option<String> = conn
-        .query_row(
-            "SELECT environment_id FROM tasks WHERE id = ?1",
-            rusqlite::params![task_id],
-            |row| row.get(0),
-        )
-        .map_err(|_| anyhow::anyhow!("task not found: {task_id}"))?;
-
-    let tx = conn.transaction()?;
-    tx.execute(
+pub fn delete_task(task_id: &str) -> Result<(), anyhow::Error> {
+    let conn = connect()?;
+    let rows = conn.execute(
         "DELETE FROM tasks WHERE id = ?1",
         rusqlite::params![task_id],
     )?;
-    if let Some(env_id) = env_id {
-        tx.execute(
-            "DELETE FROM environments WHERE id = ?1",
-            rusqlite::params![env_id],
-        )?;
+    if rows == 0 {
+        anyhow::bail!("task not found: {task_id}");
     }
-    tx.commit()?;
     Ok(())
 }
 

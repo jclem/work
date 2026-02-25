@@ -457,6 +457,11 @@ impl App {
         self.poll(client).await;
     }
 
+    pub fn set_disconnected(&mut self) {
+        self.daemon_connected = false;
+        self.error = Some("daemon disconnected".to_string());
+    }
+
     pub fn cancel_confirm(&mut self) {
         self.confirm = None;
     }
