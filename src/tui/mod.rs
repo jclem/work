@@ -8,7 +8,7 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::client::DaemonClient;
+use crate::client::{DaemonClient, DaemonEvent};
 
 use app::{App, Tab};
 
@@ -28,6 +28,8 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
 
     let mut app = App::new();
     app.poll(&client).await;
+
+    let mut events_rx = client.subscribe_events();
 
     // Spawn a blocking task to read key events into a channel.
     // Use poll() with a timeout so the thread can notice when the
@@ -62,8 +64,21 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
         tokio::select! {
             _ = tick_interval.tick() => {
                 tick_count = tick_count.wrapping_add(1);
-                if tick_count.is_multiple_of(8) {
-                    app.poll(&client).await;
+            }
+            result = events_rx.recv() => {
+                match result {
+                    Some(DaemonEvent::Connected | DaemonEvent::Updated) => {
+                        // Drain any buffered events to avoid redundant polls.
+                        while events_rx.try_recv().is_ok() {}
+                        app.poll(&client).await;
+                    }
+                    Some(DaemonEvent::Disconnected) => {
+                        app.set_disconnected();
+                    }
+                    None => {
+                        // Channel closed; reconnect.
+                        events_rx = client.subscribe_events();
+                    }
                 }
             }
             key = key_rx.recv() => {

@@ -1,3 +1,4 @@
+pub mod events;
 mod jobs;
 mod routes;
 
@@ -9,7 +10,7 @@ use axum::Router;
 use axum::routing::{delete, get, post};
 use tokio::net::UnixListener;
 use tokio::sync::watch;
-use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tower_http::trace::TraceLayer;
 
 fn pid_path(runtime_dir: &Path) -> PathBuf {
     runtime_dir.join("work.pid")
@@ -65,6 +66,7 @@ pub async fn start(force: bool) -> anyhow::Result<()> {
     let job_handle = tokio::spawn(jobs::run(shutdown_rx));
 
     let app = Router::new()
+        .route("/events", get(routes::events))
         .route("/health", get(routes::health))
         .route(
             "/projects",
@@ -91,14 +93,36 @@ pub async fn start(force: bool) -> anyhow::Result<()> {
         .route("/reset-database", post(routes::reset_database))
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::TRACE))
-                .on_response(DefaultOnResponse::new().level(tracing::Level::TRACE)),
+                .make_span_with(|req: &axum::http::Request<_>| {
+                    tracing::info_span!("request", method = %req.method(), path = %req.uri().path())
+                })
+                .on_response(
+                    |res: &axum::http::Response<_>,
+                     latency: std::time::Duration,
+                     _span: &tracing::Span| {
+                        tracing::info!(status = %res.status().as_u16(), latency_ms = latency.as_millis(), "response");
+                    },
+                ),
         );
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async {
+            shutdown_signal().await;
+            tracing::info!("closing event streams");
+            events::shutdown();
+        })
         .await?;
 
+    // Spawn a task that forces exit on a second signal.
+    let rd = runtime_dir.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        tracing::warn!("received second signal, forcing shutdown");
+        cleanup(&rd);
+        std::process::exit(1);
+    });
+
+    tracing::info!("stopping job processor");
     let _ = shutdown_tx.send(true);
     let _ = job_handle.await;
 

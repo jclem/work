@@ -7,6 +7,42 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+pub async fn events() -> impl IntoResponse {
+    let mut rx = super::events::subscribe();
+    let (tx, mpsc_rx) = mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(64);
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = rx.recv() => {
+                    if result.is_err() {
+                        break;
+                    }
+                    let chunk = axum::body::Bytes::from("data: update\n\n");
+                    if tx.send(Ok(chunk)).await.is_err() {
+                        break;
+                    }
+                }
+                _ = super::events::shutdown_notified() => {
+                    break;
+                }
+            }
+        }
+    });
+
+    let stream = ReceiverStream::new(mpsc_rx);
+    let body = Body::from_stream(stream);
+
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "text/event-stream"),
+            ("cache-control", "no-cache"),
+        ],
+        body,
+    )
+}
+
 pub async fn health() -> Json<Value> {
     Json(json!({"status": "ok"}))
 }
@@ -35,6 +71,7 @@ pub async fn create_project(Json(body): Json<CreateProjectRequest>) -> impl Into
     match crate::db::create_project(&body.name, &std::path::PathBuf::from(&body.path)) {
         Ok(()) => {
             tracing::debug!(name = %body.name, path = %body.path, "project created");
+            super::events::notify();
             (
                 StatusCode::CREATED,
                 Json(json!({"name": body.name, "path": body.path})),
@@ -57,6 +94,7 @@ pub async fn delete_project(Path(name): Path<String>) -> impl IntoResponse {
     match crate::db::delete_project(&name) {
         Ok(()) => {
             tracing::debug!(name = %name, "project removed");
+            super::events::notify();
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => {
@@ -75,6 +113,7 @@ pub async fn reset_database() -> impl IntoResponse {
     match crate::db::reset() {
         Ok(()) => {
             tracing::debug!("database reset");
+            super::events::notify();
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => {
@@ -96,17 +135,24 @@ pub struct PrepareEnvironmentRequest {
 
 pub async fn prepare_environment(Json(body): Json<PrepareEnvironmentRequest>) -> impl IntoResponse {
     let result = (|| {
-        let project = crate::db::get_project(&body.project_id)?;
-        let provider = crate::environment::get_provider(&body.provider)?;
+        let _project = crate::db::get_project(&body.project_id)?;
         let env_id = crate::id::new_id();
-        let metadata = provider.prepare(&project, &env_id)?;
-        crate::db::create_environment(&env_id, &body.project_id, &body.provider, &metadata)
+        let env =
+            crate::db::create_preparing_environment(&env_id, &body.project_id, &body.provider)?;
+        crate::db::create_job(
+            "prepare_environment",
+            &json!({
+                "env_id": env.id,
+            }),
+        )?;
+        Ok::<_, anyhow::Error>(env)
     })();
 
     match result {
         Ok(env) => {
-            tracing::debug!(id = %env.id, provider = %env.provider, project_id = %env.project_id, "environment prepared");
-            (StatusCode::CREATED, Json(json!(env))).into_response()
+            tracing::debug!(id = %env.id, provider = %env.provider, project_id = %env.project_id, "environment preparing");
+            super::events::notify();
+            (StatusCode::ACCEPTED, Json(json!(env))).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to prepare environment");
@@ -148,6 +194,7 @@ pub async fn update_environment(Path(id): Path<String>) -> impl IntoResponse {
     match result {
         Ok(env) => {
             tracing::debug!(id = %env.id, "environment updated");
+            super::events::notify();
             (StatusCode::OK, Json(json!(env))).into_response()
         }
         Err(e) => {
@@ -174,6 +221,7 @@ pub async fn claim_environment(Path(id): Path<String>) -> impl IntoResponse {
     match result {
         Ok(env) => {
             tracing::debug!(id = %env.id, provider = %env.provider, "environment claimed");
+            super::events::notify();
             (StatusCode::OK, Json(json!(env))).into_response()
         }
         Err(e) => {
@@ -207,6 +255,7 @@ pub async fn claim_next_environment(
     match result {
         Ok(env) => {
             tracing::debug!(id = %env.id, provider = %env.provider, project_id = %env.project_id, "environment claimed (next)");
+            super::events::notify();
             (StatusCode::OK, Json(json!(env))).into_response()
         }
         Err(e) => {
@@ -223,15 +272,24 @@ pub async fn claim_next_environment(
 pub async fn remove_environment(Path(id): Path<String>) -> impl IntoResponse {
     let result = (|| {
         let env = crate::db::get_environment(&id)?;
-        let provider = crate::environment::get_provider(&env.provider)?;
-        provider.remove(&env.metadata)?;
-        crate::db::delete_environment(&id)
+        if env.status == "removing" {
+            anyhow::bail!("environment {id} is already being removed");
+        }
+        crate::db::update_environment_status(&id, "removing")?;
+        crate::db::create_job(
+            "remove_environment",
+            &json!({
+                "env_id": env.id,
+            }),
+        )?;
+        Ok::<_, anyhow::Error>(())
     })();
 
     match result {
         Ok(()) => {
-            tracing::debug!(id = %id, "environment removed");
-            StatusCode::NO_CONTENT.into_response()
+            tracing::debug!(id = %id, "environment removal queued");
+            super::events::notify();
+            StatusCode::ACCEPTED.into_response()
         }
         Err(e) => {
             let msg = e.to_string();
@@ -269,6 +327,7 @@ pub async fn create_task(Json(body): Json<CreateTaskRequest>) -> impl IntoRespon
     match result {
         Ok(task) => {
             tracing::debug!(id = %task.id, provider = %task.provider, "task created");
+            super::events::notify();
             (StatusCode::ACCEPTED, Json(json!(task))).into_response()
         }
         Err(e) => {
@@ -317,10 +376,15 @@ pub async fn remove_task(Path(id): Path<String>) -> impl IntoResponse {
         let task = crate::db::get_task(&id)?;
         if let Some(env_id) = &task.environment_id {
             let env = crate::db::get_environment(env_id)?;
-            let provider = crate::environment::get_provider(&env.provider)?;
-            provider.remove(&env.metadata)?;
+            crate::db::update_environment_status(&env.id, "removing")?;
+            crate::db::create_job(
+                "remove_environment",
+                &json!({
+                    "env_id": env.id,
+                }),
+            )?;
         }
-        crate::db::delete_task_and_environment(&id)?;
+        crate::db::delete_task(&id)?;
         if let Ok(log_path) = crate::paths::task_log_path(&id) {
             let _ = std::fs::remove_file(log_path);
         }
@@ -330,7 +394,8 @@ pub async fn remove_task(Path(id): Path<String>) -> impl IntoResponse {
     match result {
         Ok(()) => {
             tracing::debug!(id = %id, "task removed");
-            StatusCode::NO_CONTENT.into_response()
+            super::events::notify();
+            StatusCode::ACCEPTED.into_response()
         }
         Err(e) => {
             let msg = e.to_string();
