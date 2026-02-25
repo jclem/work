@@ -45,8 +45,12 @@ Config lives at `$XDG_CONFIG_HOME/work/config.toml`. Edit with
 `work config edit`.
 
 ```toml
-default-environment-provider = "git-worktree"
-default-task-provider = "claude"
+environment-provider = "git-worktree"
+task-provider = "claude"
+
+[projects.backend]
+environment-provider = "sandbox"
+task-provider = "codex"
 
 [daemon]
 debug = false
@@ -60,6 +64,11 @@ args = ["-p", "{task_description}"]
 type = "script"
 command = "/path/to/sandbox-provider.sh"
 ```
+
+Project overrides are optional. When you omit `--provider` / `--env-provider`,
+`work` uses:
+1. `projects.<project-name>.*-provider` (if set)
+2. top-level `*-provider`
 
 ### Task providers
 
