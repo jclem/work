@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Custom providers &mdash; work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+<aside class="sidebar">
+  <div class="logo">work</div>
+  <div class="version">v0.1.4</div>
+  <nav>
+    <ul>
+      <li>
+        <div class="section-label">Guide</div>
+        <ul>
+          <li><a href="index.html">Overview</a></li>
+          <li><a href="getting-started.html">Getting started</a></li>
+          <li><a href="configuration.html">Configuration</a></li>
+          <li><a href="providers.html" class="active">Custom providers</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Reference</div>
+        <ul>
+          <li><a href="commands.html">Commands</a></li>
+          <li><a href="architecture.html">Architecture</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Links</div>
+        <ul>
+          <li><a href="https://github.com/jclem/work">GitHub</a></li>
+        </ul>
+      </li>
+    </ul>
+  </nav>
+</aside>
+
+<main class="main">
+
+<h1>Custom providers</h1>
+
+<p>
+The built-in <code>git-worktree</code> environment provider creates git
+worktrees for isolation. When you need something different&mdash;containers,
+VMs, remote machines, sandboxes&mdash;you can write a custom environment
+provider as a script.
+</p>
+
+<h2>Registering a provider</h2>
+
+<p>
+Add your provider to <code>config.toml</code>:
+</p>
+
+<pre><code>[environments.providers.sandbox]
+type = "script"
+command = "/usr/local/bin/sandbox-provider.sh"</code></pre>
+
+<p>
+Use it explicitly or set it as the default:
+</p>
+
+<pre><code># Explicit
+work task new "fix bug" --env-provider sandbox
+
+# Or set as default
+default-environment-provider = "sandbox"</code></pre>
+
+<h2>Protocol</h2>
+
+<p>
+Your script receives the <strong>action name</strong> as its first argument
+and <strong>JSON on stdin</strong>. It must write <strong>JSON to stdout</strong>.
+Stderr is passed through to the daemon log&mdash;use it for progress output.
+</p>
+
+<p>
+There are five actions. Each is called at a specific point in the environment
+lifecycle:
+</p>
+
+<h3>prepare</h3>
+
+<p>
+Called when a new environment is created. Set up whatever isolation you need
+and return metadata that identifies it.
+</p>
+
+<p><strong>stdin:</strong></p>
+<pre><code>{
+  "project_name": "my-project",
+  "project_path": "/Users/you/src/my-project",
+  "env_id": "7Abc123xYz..."
+}</code></pre>
+
+<p><strong>stdout:</strong> Return arbitrary JSON. This becomes the environment's
+metadata and is passed to all subsequent actions.</p>
+
+<pre><code>{
+  "sandbox_id": "sb-a1b2c3",
+  "project_path": "/Users/you/src/my-project"
+}</code></pre>
+
+<h3>claim</h3>
+
+<p>
+Called when a pooled environment is claimed for use by a task. Perform any
+setup needed before the environment is used (install dependencies, etc).
+Return updated metadata.
+</p>
+
+<p><strong>stdin:</strong> The stored metadata from <code>prepare</code>.</p>
+<p><strong>stdout:</strong> Updated metadata.</p>
+
+<h3>update</h3>
+
+<p>
+Called when a pooled environment is refreshed (e.g. <code>work env update</code>).
+Sync the environment with the latest project state. Return updated metadata.
+</p>
+
+<p><strong>stdin:</strong> The stored metadata.</p>
+<p><strong>stdout:</strong> Updated metadata.</p>
+
+<h3>remove</h3>
+
+<p>
+Called when an environment is deleted. Clean up all resources.
+</p>
+
+<p><strong>stdin:</strong></p>
+<pre><code>{
+  "metadata": { "sandbox_id": "sb-a1b2c3", ... }
+}</code></pre>
+
+<p><strong>stdout:</strong> Ignored.</p>
+
+<h3>run</h3>
+
+<p>
+Called when a task needs to execute a command in the environment.
+Your script should <code>exec</code> the command so it replaces the
+script process&mdash;this allows <code>work</code> to manage the
+process lifecycle directly.
+</p>
+
+<p><strong>stdin:</strong></p>
+<pre><code>{
+  "metadata": { "sandbox_id": "sb-a1b2c3", ... },
+  "command": "claude",
+  "args": ["-p", "fix the login bug"]
+}</code></pre>
+
+<p><strong>stdout/stderr:</strong> Becomes the task output (captured to the task log).</p>
+
+<h2>Summary</h2>
+
+<table>
+  <thead>
+    <tr><th>Action</th><th>stdin</th><th>stdout</th><th>When</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>prepare</code></td>
+      <td>project info + env_id</td>
+      <td>metadata JSON</td>
+      <td>Environment created</td>
+    </tr>
+    <tr>
+      <td><code>claim</code></td>
+      <td>metadata</td>
+      <td>updated metadata</td>
+      <td>Pooled env claimed</td>
+    </tr>
+    <tr>
+      <td><code>update</code></td>
+      <td>metadata</td>
+      <td>updated metadata</td>
+      <td><code>work env update</code></td>
+    </tr>
+    <tr>
+      <td><code>remove</code></td>
+      <td><code>{"metadata": ...}</code></td>
+      <td>(ignored)</td>
+      <td>Environment deleted</td>
+    </tr>
+    <tr>
+      <td><code>run</code></td>
+      <td>metadata + command + args</td>
+      <td>(exec the command)</td>
+      <td>Task execution</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Example: Vercel Sandbox provider</h2>
+
+<p>
+This example uses <a href="https://vercel.com/docs/vercel-sandbox">Vercel
+Sandbox</a> to run tasks in isolated cloud sandboxes.
+</p>
+
+<pre><code>#!/usr/bin/env bash
+set -euo pipefail
+
+action="$1"
+input=$(cat)
+
+case "$action" in
+  prepare)
+    project_path=$(echo "$input" | jq -r '.project_path')
+    env_id=$(echo "$input" | jq -r '.env_id')
+
+    # Create an isolated sandbox
+    sandbox_id=$(sandbox create --timeout "1h")
+
+    # Copy project files in
+    tarball=$(mktemp -t project.XXXXXX.tar)
+    git -C "$project_path" ls-files -z \
+      | tar -C "$project_path" --null -T - -cf "$tarball"
+    sandbox cp "$tarball" "${sandbox_id}:/tmp/project.tar"
+    sandbox exec "$sandbox_id" -- mkdir -p /workspace
+    sandbox exec "$sandbox_id" -- tar -xf /tmp/project.tar -C /workspace
+    sandbox exec "$sandbox_id" -- rm /tmp/project.tar
+    rm -f "$tarball"
+
+    # Install and authenticate Codex inside the sandbox
+    sandbox exec "$sandbox_id" -- npm i -g @openai/codex &gt;&amp;2
+    sandbox exec "$sandbox_id" \
+      --env OPENAI_API_KEY="$OPENAI_API_KEY" \
+      -- bash -c 'echo $OPENAI_API_KEY | codex login --with-api-key' &gt;&amp;2
+
+    # Return metadata identifying this sandbox
+    jq -n --arg sid "$sandbox_id" '{sandbox_id: $sid}'
+    ;;
+
+  update|claim)
+    # No-op for this provider
+    echo "$input"
+    ;;
+
+  remove)
+    sandbox_id=$(echo "$input" | jq -r '.metadata.sandbox_id')
+    sandbox rm "$sandbox_id" || true
+    ;;
+
+  run)
+    sandbox_id=$(echo "$input" | jq -r '.metadata.sandbox_id')
+    command=$(echo "$input" | jq -r '.command')
+    mapfile -t args &lt; &lt;(echo "$input" | jq -r '.args[]')
+    exec sandbox exec "$sandbox_id" -w /workspace \
+      -- "$command" "${args[@]}"
+    ;;
+
+  *)
+    echo "Unknown action: $action" &gt;&amp;2
+    exit 1
+    ;;
+esac</code></pre>
+
+<h2>Example: Docker provider</h2>
+
+<p>
+A minimal provider that runs tasks in Docker containers:
+</p>
+
+<pre><code>#!/usr/bin/env bash
+set -euo pipefail
+
+action="$1"
+input=$(cat)
+
+case "$action" in
+  prepare)
+    project_path=$(echo "$input" | jq -r '.project_path')
+    container_id=$(docker run -d \
+      -v "${project_path}:/workspace" \
+      -w /workspace \
+      node:20 sleep infinity)
+    jq -n --arg cid "$container_id" \
+      '{container_id: $cid}'
+    ;;
+
+  update|claim)
+    echo "$input"
+    ;;
+
+  remove)
+    cid=$(echo "$input" | jq -r '.metadata.container_id')
+    docker rm -f "$cid" 2&gt;/dev/null || true
+    ;;
+
+  run)
+    cid=$(echo "$input" | jq -r '.metadata.container_id')
+    command=$(echo "$input" | jq -r '.command')
+    mapfile -t args &lt; &lt;(echo "$input" | jq -r '.args[]')
+    exec docker exec "$cid" "$command" "${args[@]}"
+    ;;
+
+  *)
+    echo "Unknown action: $action" &gt;&amp;2
+    exit 1
+    ;;
+esac</code></pre>
+
+<div class="footer">MIT License</div>
+
+</main>
+
+</div>
+</body>
+</html>

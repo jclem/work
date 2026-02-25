@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Commands &mdash; work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+<aside class="sidebar">
+  <div class="logo">work</div>
+  <div class="version">v0.1.4</div>
+  <nav>
+    <ul>
+      <li>
+        <div class="section-label">Guide</div>
+        <ul>
+          <li><a href="index.html">Overview</a></li>
+          <li><a href="getting-started.html">Getting started</a></li>
+          <li><a href="configuration.html">Configuration</a></li>
+          <li><a href="providers.html">Custom providers</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Reference</div>
+        <ul>
+          <li><a href="commands.html" class="active">Commands</a></li>
+          <li><a href="architecture.html">Architecture</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Links</div>
+        <ul>
+          <li><a href="https://github.com/jclem/work">GitHub</a></li>
+        </ul>
+      </li>
+    </ul>
+  </nav>
+</aside>
+
+<main class="main">
+
+<h1>Commands</h1>
+
+<h2>Global flags</h2>
+
+<table>
+  <thead>
+    <tr><th>Flag</th><th>Env var</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--debug</code></td>
+      <td><code>WORK_DEBUG</code></td>
+      <td>Enable debug logging</td>
+    </tr>
+    <tr>
+      <td><code>--work-home PATH</code></td>
+      <td><code>WORK_HOME</code></td>
+      <td>Override all data/config/runtime paths</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Output formats</h2>
+
+<p>
+Commands that list data accept <code>--format</code> with one of:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Format</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>human</code></td><td>Aligned columns (default)</td></tr>
+    <tr><td><code>plain</code></td><td>Tab-separated, no headers</td></tr>
+    <tr><td><code>json</code></td><td>JSON array or object</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2>work project</h2>
+
+<h3>work project new [name] [--path PATH]</h3>
+
+<p>
+Register a project. Defaults to the current directory name and path.
+</p>
+
+<pre><code># Register current directory
+work project new
+
+# Specify name and path
+work project new my-api --path ~/src/api</code></pre>
+
+<h3>work project list [--format FORMAT]</h3>
+
+<p>List all registered projects. Alias: <code>work project ls</code>.</p>
+
+<h3>work project remove NAME</h3>
+
+<p>Unregister a project. Alias: <code>work project rm</code>. Does not
+delete any files.</p>
+
+<hr>
+
+<h2>work task</h2>
+
+<h3>work task new DESCRIPTION [options]</h3>
+
+<p>Create a new task. This prepares an environment and runs the configured
+task provider command.</p>
+
+<table>
+  <thead>
+    <tr><th>Option</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>--provider NAME</code></td>
+      <td>Task provider (falls back to <code>default-task-provider</code> in config)</td>
+    </tr>
+    <tr>
+      <td><code>--env-provider NAME</code></td>
+      <td>Environment provider (falls back to <code>default-environment-provider</code>)</td>
+    </tr>
+    <tr>
+      <td><code>--project NAME</code></td>
+      <td>Project name (defaults to project matching cwd)</td>
+    </tr>
+    <tr>
+      <td><code>--attach</code>, <code>-a</code></td>
+      <td>Follow task logs after creation</td>
+    </tr>
+    <tr>
+      <td><code>--format FORMAT</code></td>
+      <td>Output format</td>
+    </tr>
+  </tbody>
+</table>
+
+<pre><code># Use defaults
+work task new "fix the login bug"
+
+# Specify providers explicitly
+work task new "add tests" --provider claude --env-provider sandbox
+
+# Follow output
+work task new "refactor auth module" --attach</code></pre>
+
+<h3>work task list [--format FORMAT]</h3>
+
+<p>List all tasks. Alias: <code>work task ls</code>.</p>
+
+<h3>work task remove ID</h3>
+
+<p>Remove a task and its associated environment. Alias: <code>work task rm</code>.</p>
+
+<hr>
+
+<h2>work logs</h2>
+
+<h3>work logs ID [--follow]</h3>
+
+<p>View output from a task.</p>
+
+<pre><code># View completed task output
+work logs 4Abc123xYz
+
+# Stream in real time
+work logs 4Abc123xYz --follow
+work logs 4Abc123xYz -f</code></pre>
+
+<hr>
+
+<h2>work env</h2>
+
+<p>Alias: <code>work environment</code>.</p>
+
+<h3>work env create [project] [--provider NAME]</h3>
+
+<p>Create a new environment and immediately claim it. The project defaults
+to the project matching your current directory.</p>
+
+<h3>work env prepare [project] [--provider NAME]</h3>
+
+<p>Create a new environment and add it to the pool. Pooled environments
+are not yet in use and can be claimed later by a task or manually.</p>
+
+<h3>work env claim [ID] [--provider NAME --project NAME]</h3>
+
+<p>Claim a pooled environment. Either specify an environment ID directly,
+or use <code>--provider</code> and <code>--project</code> to claim the
+next available match.</p>
+
+<h3>work env update ID</h3>
+
+<p>Update a pooled environment. For <code>git-worktree</code>, this
+fetches from origin and merges.</p>
+
+<h3>work env remove ID</h3>
+
+<p>Remove an environment. Alias: <code>work env rm</code>. Cleans up
+the worktree or calls the provider's <code>remove</code> action.</p>
+
+<h3>work env list [--format FORMAT]</h3>
+
+<p>List all environments. Alias: <code>work env ls</code>.</p>
+
+<h3>work env provider list</h3>
+
+<p>List all available environment providers (built-in and configured).
+Alias: <code>work env provider ls</code>.</p>
+
+<hr>
+
+<h2>work tui</h2>
+
+<p>Open the terminal UI. Shows tasks, projects, and environments with
+real-time updates via event streaming.</p>
+
+<p>Keybindings:</p>
+
+<table>
+  <thead>
+    <tr><th>Key</th><th>Action</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>Tab</code></td><td>Switch between tabs</td></tr>
+    <tr><td><code>j</code> / <code>k</code></td><td>Navigate up/down</td></tr>
+    <tr><td><code>g</code> / <code>G</code></td><td>Jump to top/bottom</td></tr>
+    <tr><td><code>d</code> / <code>u</code></td><td>Half-page down/up</td></tr>
+    <tr><td><code>Enter</code></td><td>View task logs</td></tr>
+    <tr><td><code>D</code></td><td>Delete selected item</td></tr>
+    <tr><td><code>q</code></td><td>Quit</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2>work config</h2>
+
+<h3>work config edit</h3>
+
+<p>Open the config file in <code>$EDITOR</code>.</p>
+
+<hr>
+
+<h2>work daemon</h2>
+
+<h3>work daemon start [--force]</h3>
+
+<p>Start the daemon process. Use <code>--force</code> to remove stale
+runtime files before starting.</p>
+
+<h3>work daemon install</h3>
+
+<p>Install the daemon as a macOS launchd LaunchAgent. It will start
+automatically on login.</p>
+
+<h3>work daemon uninstall</h3>
+
+<p>Uninstall the LaunchAgent.</p>
+
+<hr>
+
+<h2>work completions</h2>
+
+<h3>work completions SHELL</h3>
+
+<p>Generate shell completions. Supported shells:
+<code>bash</code>, <code>zsh</code>, <code>fish</code>,
+<code>elvish</code>, <code>powershell</code>.</p>
+
+<hr>
+
+<h2>work version</h2>
+
+<p>Print the version.</p>
+
+<div class="footer">MIT License</div>
+
+</main>
+
+</div>
+</body>
+</html>

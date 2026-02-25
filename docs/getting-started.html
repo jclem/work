@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started &mdash; work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+<aside class="sidebar">
+  <div class="logo">work</div>
+  <div class="version">v0.1.4</div>
+  <nav>
+    <ul>
+      <li>
+        <div class="section-label">Guide</div>
+        <ul>
+          <li><a href="index.html">Overview</a></li>
+          <li><a href="getting-started.html" class="active">Getting started</a></li>
+          <li><a href="configuration.html">Configuration</a></li>
+          <li><a href="providers.html">Custom providers</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Reference</div>
+        <ul>
+          <li><a href="commands.html">Commands</a></li>
+          <li><a href="architecture.html">Architecture</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Links</div>
+        <ul>
+          <li><a href="https://github.com/jclem/work">GitHub</a></li>
+        </ul>
+      </li>
+    </ul>
+  </nav>
+</aside>
+
+<main class="main">
+
+<h1>Getting started</h1>
+
+<h2>1. Start the daemon</h2>
+
+<p>
+<code>work</code> uses a background daemon to manage environments and execute
+tasks. Start it directly:
+</p>
+
+<pre><code>work daemon start</code></pre>
+
+<p>
+Or install it as a launchd service so it starts automatically on login (macOS):
+</p>
+
+<pre><code>work daemon install</code></pre>
+
+<h2>2. Register a project</h2>
+
+<p>
+Navigate to a git repository and register it:
+</p>
+
+<pre><code>cd ~/src/my-project
+work project new</code></pre>
+
+<p>
+This registers the current directory as a project named after the directory.
+You can also specify both:
+</p>
+
+<pre><code>work project new my-project --path ~/src/my-project</code></pre>
+
+<p>Verify your projects:</p>
+
+<pre><code>$ work project list
+NAME        PATH
+my-project  /Users/you/src/my-project</code></pre>
+
+<h2>3. Configure a task provider</h2>
+
+<p>
+Before creating tasks, configure a task provider. This tells <code>work</code>
+what command to run. Open the config:
+</p>
+
+<pre><code>work config edit</code></pre>
+
+<p>
+Add a provider. Here's one that runs
+<a href="https://claude.ai/claude-code">Claude Code</a>:
+</p>
+
+<pre><code>default-task-provider = "claude"
+default-environment-provider = "git-worktree"
+
+[tasks.providers.claude]
+type = "command"
+command = "claude"
+args = ["-p", "{task_description}"]</code></pre>
+
+<p>
+The <code>{task_description}</code> placeholder is replaced with the
+task description you provide when creating a task.
+</p>
+
+<h2>4. Create a task</h2>
+
+<p>
+From within your project directory:
+</p>
+
+<pre><code>work task new "fix the login bug"</code></pre>
+
+<p>
+This will:
+</p>
+
+<ol>
+  <li>Create a git worktree for isolation</li>
+  <li>Run <code>claude -p "fix the login bug"</code> inside the worktree</li>
+  <li>Capture all output to a log file</li>
+</ol>
+
+<p>
+Use <code>--attach</code> to stream logs to your terminal:
+</p>
+
+<pre><code>work task new "add form validation to signup page" --attach</code></pre>
+
+<p>
+Or follow logs for an existing task:
+</p>
+
+<pre><code>work logs &lt;task-id&gt; --follow</code></pre>
+
+<h2>5. Monitor with the TUI</h2>
+
+<pre><code>work tui</code></pre>
+
+<p>
+The terminal UI shows all tasks, projects, and environments with real-time
+updates. Navigate with tab, arrow keys, and vim-style bindings (j/k, g/G).
+</p>
+
+<p><img src="tui.png" alt="work tui showing two running tasks" class="lightbox-thumb" style="max-width:100%; border: 1px solid var(--border-light);" onclick="document.getElementById('lightbox').classList.add('open')"></p>
+
+<div id="lightbox" class="lightbox-overlay" onclick="this.classList.remove('open')">
+  <img src="tui.png" alt="work tui showing two running tasks">
+</div>
+
+<script>
+document.addEventListener('keydown', function(e) {
+  var lb = document.getElementById('lightbox');
+  if (lb.classList.contains('open') && (e.key === 'Escape' || e.key === 'q' || (e.ctrlKey && e.key === 'c'))) {
+    lb.classList.remove('open');
+  }
+});
+</script>
+
+<h2>6. Run tasks in parallel</h2>
+
+<p>
+Each task gets its own environment, so you can run as many as you want
+concurrently:
+</p>
+
+<pre><code>work task new "fix the login bug"
+work task new "add unit tests for auth module"
+work task new "update API documentation"</code></pre>
+
+<p>
+All three tasks run simultaneously in separate git worktrees. Monitor
+them in the TUI or check on any one with <code>work logs</code>.
+</p>
+
+<h2>7. Environment pooling</h2>
+
+<p>
+Creating environments takes time (cloning worktrees, installing dependencies).
+You can pre-warm a pool of environments so tasks start instantly:
+</p>
+
+<pre><code># Prepare some environments ahead of time
+work env prepare
+work env prepare
+work env prepare</code></pre>
+
+<p>
+When you create a task, <code>work</code> will claim an available pooled
+environment instead of creating a new one. If no pooled environment is
+available, one is created on the fly.
+</p>
+
+<h2>Cleanup</h2>
+
+<p>
+Remove a task (and its environment):
+</p>
+
+<pre><code>work task rm &lt;task-id&gt;</code></pre>
+
+<p>
+Remove a standalone environment:
+</p>
+
+<pre><code>work env rm &lt;env-id&gt;</code></pre>
+
+<p>
+Unregister a project:
+</p>
+
+<pre><code>work project rm my-project</code></pre>
+
+<div class="footer">MIT License</div>
+
+</main>
+
+</div>
+</body>
+</html>

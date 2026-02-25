@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>work</title>
+<meta name="description" content="A CLI for running parallel, isolated tasks against your projects.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+<aside class="sidebar">
+  <div class="logo">work</div>
+  <div class="version">v0.1.4</div>
+  <nav>
+    <ul>
+      <li>
+        <div class="section-label">Guide</div>
+        <ul>
+          <li><a href="index.html" class="active">Overview</a></li>
+          <li><a href="getting-started.html">Getting started</a></li>
+          <li><a href="configuration.html">Configuration</a></li>
+          <li><a href="providers.html">Custom providers</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Reference</div>
+        <ul>
+          <li><a href="commands.html">Commands</a></li>
+          <li><a href="architecture.html">Architecture</a></li>
+        </ul>
+      </li>
+      <li>
+        <div class="section-label">Links</div>
+        <ul>
+          <li><a href="https://github.com/jclem/work">GitHub</a></li>
+        </ul>
+      </li>
+    </ul>
+  </nav>
+</aside>
+
+<main class="main">
+
+<h1>work</h1>
+
+<p>
+A CLI for running parallel, isolated tasks against your projects.
+</p>
+
+<p>
+<code>work</code> manages <strong>projects</strong>,
+<strong>environments</strong>, and <strong>tasks</strong>. Register a
+project, and <code>work</code> can spin up isolated environments (git
+worktrees by default) and run tasks in them via configurable providers.
+A background daemon handles preparation and execution. A built-in TUI
+lets you monitor everything.
+</p>
+
+<p><img src="tui.png" alt="work tui showing two running tasks" class="lightbox-thumb" style="max-width:100%; border: 1px solid var(--border-light);" onclick="document.getElementById('lightbox').classList.add('open')"></p>
+
+<div id="lightbox" class="lightbox-overlay" onclick="this.classList.remove('open')">
+  <img src="tui.png" alt="work tui showing two running tasks">
+</div>
+
+<script>
+document.addEventListener('keydown', function(e) {
+  var lb = document.getElementById('lightbox');
+  if (lb.classList.contains('open') && (e.key === 'Escape' || e.key === 'q' || (e.ctrlKey && e.key === 'c'))) {
+    lb.classList.remove('open');
+  }
+});
+</script>
+
+<h2>How it works</h2>
+
+<p>
+The core workflow is:
+</p>
+
+<ol>
+  <li><strong>Register a project</strong> &mdash; point <code>work</code> at a git repository.</li>
+  <li><strong>Create a task</strong> &mdash; describe what needs to be done.</li>
+  <li><strong>work handles the rest</strong> &mdash; it creates an isolated environment, runs your configured task provider (e.g. Claude Code, Codex, a shell script), and captures all output.</li>
+</ol>
+
+<p>
+You can run many tasks in parallel, each in its own isolated environment.
+Monitor them all from the TUI or stream logs from the CLI.
+</p>
+
+<h2>Install</h2>
+
+<h3>Homebrew</h3>
+
+<pre><code>brew install jclem/tap/work</code></pre>
+
+<h3>From source</h3>
+
+<pre><code>cargo install --git https://github.com/jclem/work</code></pre>
+
+<h2>Quick start</h2>
+
+<pre><code># Start the daemon
+work daemon start
+
+# Register a project (defaults to cwd)
+work project new
+
+# Run a task
+work task new "fix the login bug" --attach</code></pre>
+
+<p>
+This creates a git worktree, runs your configured task provider in it,
+and streams the output to your terminal. See
+<a href="getting-started.html">Getting started</a> for a full walkthrough.
+</p>
+
+<div class="footer">MIT License</div>
+
+</main>
+
+</div>
+</body>
+</html>
