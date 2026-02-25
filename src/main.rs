@@ -63,21 +63,6 @@ enum Command {
         command: TaskCommand,
     },
 
-    /// View task logs
-    Logs {
-        /// Task or environment ID
-        #[arg(add = ArgValueCompleter::new(complete_log_ids))]
-        id: String,
-
-        /// Treat ID as environment ID (provider lifecycle logs)
-        #[arg(short = 'e', long = "environment")]
-        environment: bool,
-
-        /// Follow log output in realtime
-        #[arg(short, long)]
-        follow: bool,
-    },
-
     /// Manage environments
     #[command(alias = "env")]
     Environment {
@@ -219,6 +204,17 @@ enum EnvironmentCommand {
         format: OutputFormat,
     },
 
+    /// View environment provider lifecycle logs
+    Logs {
+        /// Environment ID
+        #[arg(add = ArgValueCompleter::new(complete_env_ids))]
+        id: String,
+
+        /// Follow log output in realtime
+        #[arg(short = 'f', long = "follow")]
+        follow: bool,
+    },
+
     /// Manage environment providers
     Provider {
         #[command(subcommand)]
@@ -275,6 +271,17 @@ enum TaskCommand {
         /// Output format
         #[arg(long, default_value = "human")]
         format: OutputFormat,
+    },
+
+    /// View task logs
+    Logs {
+        /// Task ID
+        #[arg(add = ArgValueCompleter::new(complete_task_ids))]
+        id: String,
+
+        /// Follow log output in realtime
+        #[arg(short = 'f', long = "follow")]
+        follow: bool,
     },
 }
 
@@ -406,43 +413,6 @@ fn complete_task_ids(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
     .join();
 
     result.ok().and_then(|r| r.ok()).unwrap_or_default()
-}
-
-fn complete_log_ids(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
-    let mut candidates = complete_task_ids(current);
-    let current = current.to_str().unwrap_or_default().to_owned();
-
-    let env_candidates = std::thread::spawn(move || -> anyhow::Result<Vec<CompletionCandidate>> {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async {
-            paths::init(None);
-            let client = client::DaemonClient::new()?;
-            let envs = client.list_environments().await?;
-            let projects = client.list_projects().await?;
-
-            let out = envs
-                .iter()
-                .filter(|e| e.id.starts_with(&current))
-                .map(|e| {
-                    let project = projects
-                        .iter()
-                        .find(|p| p.id == e.project_id)
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("-");
-                    CompletionCandidate::new(e.id.to_string())
-                        .help(Some(format!("env: {project} ({})", e.status).into()))
-                })
-                .collect();
-            Ok(out)
-        })
-    })
-    .join()
-    .ok()
-    .and_then(|r| r.ok())
-    .unwrap_or_default();
-
-    candidates.extend(env_candidates);
-    candidates
 }
 
 fn print_env(env: &db::Environment, format: &OutputFormat) -> anyhow::Result<()> {
@@ -773,6 +743,18 @@ async fn run() -> anyhow::Result<()> {
                             }
                         }
                     }
+                    EnvironmentCommand::Logs { id, follow } => {
+                        if follow {
+                            follow_environment_logs(&client, &id).await?;
+                        } else {
+                            let log_path = paths::environment_log_path(&id)?;
+                            if !log_path.exists() {
+                                anyhow::bail!("no logs found for environment {id}");
+                            }
+                            let contents = std::fs::read_to_string(&log_path)?;
+                            print!("{contents}");
+                        }
+                    }
                     EnvironmentCommand::Provider { command } => match command {
                         ProviderCommand::List => {
                             for name in &environment::list_providers() {
@@ -853,34 +835,19 @@ async fn run() -> anyhow::Result<()> {
                             }
                         }
                     }
-                },
-                Command::Logs {
-                    id,
-                    environment,
-                    follow,
-                } => {
-                    if environment {
+                    TaskCommand::Logs { id, follow } => {
                         if follow {
-                            follow_environment_logs(&client, &id).await?;
+                            follow_task_logs(&client, &id).await?;
                         } else {
-                            let log_path = paths::environment_log_path(&id)?;
+                            let log_path = paths::task_log_path(&id)?;
                             if !log_path.exists() {
-                                anyhow::bail!("no logs found for environment {id}");
+                                anyhow::bail!("no logs found for task {id}");
                             }
                             let contents = std::fs::read_to_string(&log_path)?;
                             print!("{contents}");
                         }
-                    } else if follow {
-                        follow_task_logs(&client, &id).await?;
-                    } else {
-                        let log_path = paths::task_log_path(&id)?;
-                        if !log_path.exists() {
-                            anyhow::bail!("no logs found for task {id}");
-                        }
-                        let contents = std::fs::read_to_string(&log_path)?;
-                        print!("{contents}");
                     }
-                }
+                },
                 Command::Tui => tui::run(client).await?,
                 Command::Config { .. }
                 | Command::Daemon { .. }

@@ -675,7 +675,7 @@ command = "{}"
     }
 
     d.assert_cmd()
-        .args(["logs", "--environment", &env_id])
+        .args(["environment", "logs", &env_id])
         .assert()
         .success()
         .stdout(predicate::str::contains("provider-output: action=prepare"));
@@ -875,6 +875,15 @@ command = "{}"
         }
         thread::sleep(Duration::from_millis(100));
     }
+
+    d.assert_cmd()
+        .args(["task", "logs", &task_id])
+        .assert()
+        .success();
+    d.assert_cmd()
+        .args(["task", "logs", &task_id, "--follow"])
+        .assert()
+        .success();
 
     d.assert_cmd()
         .args(["task", "remove", &task_id])

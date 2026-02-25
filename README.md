@@ -180,7 +180,8 @@ work task new DESC [--provider P]       Create and run a task
 work task list [--format FORMAT]        List tasks
 work task rm ID                         Remove a task and its environment
 
-work logs ID [--follow]                 View task output
+work task logs ID [--follow]            View task output
+work env logs ID [--follow]             View environment provider output
 
 work env create [--provider P]          Create and claim an environment
 work env prepare [--provider P]         Prepare an environment (pool it)

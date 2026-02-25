@@ -160,20 +160,16 @@ work task new "refactor auth module" --attach</code></pre>
 
 <p>Remove a task and its associated environment. Alias: <code>work task rm</code>.</p>
 
-<hr>
-
-<h2>work logs</h2>
-
-<h3>work logs ID [--follow]</h3>
+<h3>work task logs ID [--follow]</h3>
 
 <p>View output from a task.</p>
 
 <pre><code># View completed task output
-work logs 4Abc123xYz
+work task logs 4Abc123xYz
 
 # Stream in real time
-work logs 4Abc123xYz --follow
-work logs 4Abc123xYz -f</code></pre>
+work task logs 4Abc123xYz --follow
+work task logs 4Abc123xYz -f</code></pre>
 
 <hr>
 
@@ -210,6 +206,17 @@ the worktree or calls the provider's <code>remove</code> action.</p>
 <h3>work env list [--format FORMAT]</h3>
 
 <p>List all environments. Alias: <code>work env ls</code>.</p>
+
+<h3>work env logs ID [--follow]</h3>
+
+<p>View environment provider lifecycle output for an environment.</p>
+
+<pre><code># View completed provider output
+work env logs 7Abc123xYz
+
+# Stream in real time
+work env logs 7Abc123xYz --follow
+work env logs 7Abc123xYz -f</code></pre>
 
 <h3>work env provider list</h3>
 
