@@ -215,6 +215,7 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             KeyCode::Char('L') => app.expand_all(),
             KeyCode::Enter => app.enter_detail(),
             KeyCode::Char('d') => app.prompt_delete(),
+            KeyCode::Char('D') => app.prompt_force_delete(),
             KeyCode::Char('n') => app.begin_create_task_prompt(),
             KeyCode::Char('`') => app.toggle_task_view_mode(),
             _ => {}
@@ -223,6 +224,7 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             KeyCode::Char('j') | KeyCode::Down => app.select_next(),
             KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
             KeyCode::Char('d') => app.prompt_delete(),
+            KeyCode::Char('D') => app.prompt_force_delete(),
             _ => {}
         },
         Tab::Environments => match key.code {
@@ -230,6 +232,7 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
             KeyCode::Enter => app.enter_detail(),
             KeyCode::Char('d') => app.prompt_delete(),
+            KeyCode::Char('D') => app.prompt_force_delete(),
             _ => {}
         },
         Tab::Daemon => {}

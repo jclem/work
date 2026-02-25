@@ -62,9 +62,17 @@ pub enum DetailView {
 }
 
 pub enum Confirm {
-    DeleteTask { task_id: String },
-    DeleteProject { project_name: String },
-    DeleteEnvironment { env_id: String },
+    DeleteTask {
+        task_id: String,
+        skip_provider: bool,
+    },
+    DeleteProject {
+        project_name: String,
+    },
+    DeleteEnvironment {
+        env_id: String,
+        skip_provider: bool,
+    },
 }
 
 pub struct CreateTaskPrompt {
@@ -544,11 +552,20 @@ impl App {
     }
 
     pub fn prompt_delete(&mut self) {
+        self.prompt_delete_with_options(false);
+    }
+
+    pub fn prompt_force_delete(&mut self) {
+        self.prompt_delete_with_options(true);
+    }
+
+    fn prompt_delete_with_options(&mut self, skip_provider: bool) {
         match self.tab {
             Tab::Tasks => {
                 if let Some(ti) = self.selected_task_index() {
                     self.confirm = Some(Confirm::DeleteTask {
                         task_id: self.tasks[ti].id.clone(),
+                        skip_provider,
                     });
                 }
             }
@@ -563,6 +580,7 @@ impl App {
                 if let Some(env) = self.environments.get(self.selected) {
                     self.confirm = Some(Confirm::DeleteEnvironment {
                         env_id: env.id.clone(),
+                        skip_provider,
                     });
                 }
             }
@@ -572,9 +590,12 @@ impl App {
 
     pub async fn confirm_delete(&mut self, client: &DaemonClient) {
         match &self.confirm {
-            Some(Confirm::DeleteTask { task_id }) => {
+            Some(Confirm::DeleteTask {
+                task_id,
+                skip_provider,
+            }) => {
                 let task_id = task_id.clone();
-                match client.remove_task(&task_id).await {
+                match client.remove_task(&task_id, *skip_provider).await {
                     Ok(()) => self.error = None,
                     Err(e) => self.error = Some(format!("delete failed: {e}")),
                 }
@@ -586,9 +607,12 @@ impl App {
                     Err(e) => self.error = Some(format!("delete failed: {e}")),
                 }
             }
-            Some(Confirm::DeleteEnvironment { env_id }) => {
+            Some(Confirm::DeleteEnvironment {
+                env_id,
+                skip_provider,
+            }) => {
                 let env_id = env_id.clone();
-                match client.remove_environment(&env_id).await {
+                match client.remove_environment(&env_id, *skip_provider).await {
                     Ok(()) => self.error = None,
                     Err(e) => self.error = Some(format!("delete failed: {e}")),
                 }

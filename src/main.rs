@@ -194,6 +194,10 @@ enum EnvironmentCommand {
         /// Environment ID
         #[arg(add = ArgValueCompleter::new(complete_env_ids))]
         id: String,
+
+        /// Skip provider cleanup and remove only database records
+        #[arg(long)]
+        skip_provider: bool,
     },
 
     /// List environments
@@ -263,6 +267,10 @@ enum TaskCommand {
         /// Task ID
         #[arg(add = ArgValueCompleter::new(complete_task_ids))]
         id: String,
+
+        /// Skip provider cleanup and remove only database records
+        #[arg(long)]
+        skip_provider: bool,
     },
 
     /// List tasks
@@ -708,8 +716,8 @@ async fn run() -> anyhow::Result<()> {
                         };
                         print_env(&env, &format)?;
                     }
-                    EnvironmentCommand::Remove { id } => {
-                        client.remove_environment(&id).await?;
+                    EnvironmentCommand::Remove { id, skip_provider } => {
+                        client.remove_environment(&id, skip_provider).await?;
                     }
                     EnvironmentCommand::List { format } => {
                         let envs = client.list_environments().await?;
@@ -801,8 +809,8 @@ async fn run() -> anyhow::Result<()> {
                             follow_task_logs(&client, &task.id).await?;
                         }
                     }
-                    TaskCommand::Remove { id } => {
-                        client.remove_task(&id).await?;
+                    TaskCommand::Remove { id, skip_provider } => {
+                        client.remove_task(&id, skip_provider).await?;
                     }
                     TaskCommand::List { format } => {
                         let tasks = client.list_tasks().await?;

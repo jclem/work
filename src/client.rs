@@ -168,8 +168,12 @@ impl DaemonClient {
         Ok(serde_json::from_str(&body)?)
     }
 
-    pub async fn remove_environment(&self, id: &str) -> anyhow::Result<()> {
-        let uri = format!("/environments/{id}");
+    pub async fn remove_environment(&self, id: &str, skip_provider: bool) -> anyhow::Result<()> {
+        let uri = if skip_provider {
+            format!("/environments/{id}?skip_provider=true")
+        } else {
+            format!("/environments/{id}")
+        };
         let (status, body) = self.request(hyper::Method::DELETE, &uri, None).await?;
         if !status.is_success() {
             anyhow::bail!("{}", extract_error(&body));
@@ -208,8 +212,12 @@ impl DaemonClient {
         Ok(serde_json::from_str(&body)?)
     }
 
-    pub async fn remove_task(&self, id: &str) -> anyhow::Result<()> {
-        let uri = format!("/tasks/{id}");
+    pub async fn remove_task(&self, id: &str, skip_provider: bool) -> anyhow::Result<()> {
+        let uri = if skip_provider {
+            format!("/tasks/{id}?skip_provider=true")
+        } else {
+            format!("/tasks/{id}")
+        };
         let (status, body) = self.request(hyper::Method::DELETE, &uri, None).await?;
         if !status.is_success() {
             anyhow::bail!("{}", extract_error(&body));

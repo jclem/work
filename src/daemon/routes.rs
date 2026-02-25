@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::body::Body;
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde_json::{Value, json};
@@ -219,6 +219,12 @@ pub struct ClaimNextEnvironmentRequest {
     pub project_id: String,
 }
 
+#[derive(Default, serde::Deserialize)]
+pub struct RemoveQuery {
+    #[serde(default)]
+    pub skip_provider: bool,
+}
+
 pub async fn claim_next_environment(
     Json(body): Json<ClaimNextEnvironmentRequest>,
 ) -> impl IntoResponse {
@@ -241,14 +247,25 @@ pub async fn claim_next_environment(
     }
 }
 
-pub async fn remove_environment(Path(id): Path<String>) -> impl IntoResponse {
-    let result = crate::db::stage_remove_environment(&id);
+pub async fn remove_environment(
+    Path(id): Path<String>,
+    Query(query): Query<RemoveQuery>,
+) -> impl IntoResponse {
+    let result = if query.skip_provider {
+        crate::db::force_delete_environment(&id)
+    } else {
+        crate::db::stage_remove_environment(&id)
+    };
 
     match result {
         Ok(()) => {
-            tracing::debug!(id = %id, "environment removal queued");
+            tracing::debug!(id = %id, skip_provider = query.skip_provider, "environment removed request accepted");
             super::events::notify();
-            StatusCode::ACCEPTED.into_response()
+            if query.skip_provider {
+                StatusCode::NO_CONTENT.into_response()
+            } else {
+                StatusCode::ACCEPTED.into_response()
+            }
         }
         Err(e) => {
             let msg = e.to_string();
@@ -327,14 +344,25 @@ pub async fn get_task(Path(id): Path<String>) -> impl IntoResponse {
     }
 }
 
-pub async fn remove_task(Path(id): Path<String>) -> impl IntoResponse {
-    let result = crate::db::stage_remove_task(&id);
+pub async fn remove_task(
+    Path(id): Path<String>,
+    Query(query): Query<RemoveQuery>,
+) -> impl IntoResponse {
+    let result = if query.skip_provider {
+        crate::db::force_delete_task(&id)
+    } else {
+        crate::db::stage_remove_task(&id)
+    };
 
     match result {
         Ok(()) => {
-            tracing::debug!(id = %id, "task removal queued");
+            tracing::debug!(id = %id, skip_provider = query.skip_provider, "task removed request accepted");
             super::events::notify();
-            StatusCode::ACCEPTED.into_response()
+            if query.skip_provider {
+                StatusCode::NO_CONTENT.into_response()
+            } else {
+                StatusCode::ACCEPTED.into_response()
+            }
         }
         Err(e) => {
             let msg = e.to_string();

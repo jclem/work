@@ -94,15 +94,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             None => match app.tab {
                 Tab::Tasks => match app.task_view_mode {
                     TaskViewMode::Flat => {
-                        " Tab: tabs | j/k: navigate | Enter: logs | n: new | d: delete | `: flat/tree | q: quit"
+                        " Tab: tabs | j/k: navigate | Enter: logs | n: new | d: delete | D: force delete | `: flat/tree | q: quit"
                     }
                     TaskViewMode::Tree => {
-                        " Tab: tabs | j/k: navigate | h/l: collapse/expand | Enter: logs | n: new | d: delete | `: flat/tree | q: quit"
+                        " Tab: tabs | j/k: navigate | h/l: collapse/expand | Enter: logs | n: new | d: delete | D: force delete | `: flat/tree | q: quit"
                     }
                 },
-                Tab::Projects => " Tab: tabs | j/k: navigate | d: delete | q: quit",
+                Tab::Projects => " Tab: tabs | j/k: navigate | d/D: delete | q: quit",
                 Tab::Environments => {
-                    " Tab: tabs | j/k: navigate | Enter: logs | d: delete | q: quit"
+                    " Tab: tabs | j/k: navigate | Enter: logs | d: delete | D: force delete | q: quit"
                 }
                 Tab::Daemon => " Tab: tabs | q: quit",
                 Tab::Logs => {
@@ -519,23 +519,37 @@ fn draw_create_task_prompt(frame: &mut Frame, app: &App) {
 }
 
 fn draw_confirm_dialog(frame: &mut Frame, app: &App) {
-    let (target_label, target_value) = match app.confirm {
-        Some(Confirm::DeleteTask { ref task_id }) => ("Task", short_id(task_id).to_string()),
-        Some(Confirm::DeleteProject { ref project_name }) => ("Project", project_name.clone()),
-        Some(Confirm::DeleteEnvironment { ref env_id }) => {
-            ("Environment", short_id(env_id).to_string())
+    let (target_label, target_value, skip_provider) = match app.confirm {
+        Some(Confirm::DeleteTask {
+            ref task_id,
+            skip_provider,
+        }) => ("Task", short_id(task_id).to_string(), skip_provider),
+        Some(Confirm::DeleteProject { ref project_name }) => {
+            ("Project", project_name.clone(), false)
         }
+        Some(Confirm::DeleteEnvironment {
+            ref env_id,
+            skip_provider,
+        }) => ("Environment", short_id(env_id).to_string(), skip_provider),
         None => {
             return;
         }
     };
 
-    let area = centered_rect(62, 9, frame.area());
+    let area = if skip_provider {
+        centered_rect(70, 11, frame.area())
+    } else {
+        centered_rect(62, 9, frame.area())
+    };
     frame.render_widget(Clear, area);
 
-    let body = vec![
+    let mut body = vec![
         Line::from(vec![Span::styled(
-            format!("Delete {target_label}?"),
+            if skip_provider {
+                format!("Force-delete {target_label}?")
+            } else {
+                format!("Delete {target_label}?")
+            },
             Style::default()
                 .fg(Color::LightRed)
                 .add_modifier(Modifier::BOLD),
@@ -555,18 +569,39 @@ fn draw_confirm_dialog(frame: &mut Frame, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
-        Line::default(),
-        Line::from(vec![Span::styled(
-            "Press y to confirm, n or Esc to cancel.",
-            Style::default().fg(Color::Gray),
-        )]),
     ];
+
+    if skip_provider {
+        body.push(Line::default());
+        body.push(Line::from(vec![Span::styled(
+            "Provider cleanup will be skipped (database records only).",
+            Style::default().fg(Color::Yellow),
+        )]));
+    }
+
+    body.push(Line::default());
+    body.push(Line::from(vec![Span::styled(
+        "Press y to confirm, n or Esc to cancel.",
+        Style::default().fg(Color::Gray),
+    )]));
+
+    let title = if skip_provider {
+        " Confirm Force Delete "
+    } else {
+        " Confirm Delete "
+    };
+
+    let border_color = if skip_provider {
+        Color::Yellow
+    } else {
+        Color::LightRed
+    };
 
     let dialog = Paragraph::new(body).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Confirm Delete ")
-            .border_style(Style::default().fg(Color::LightRed)),
+            .title(title)
+            .border_style(Style::default().fg(border_color)),
     );
 
     frame.render_widget(dialog, area);

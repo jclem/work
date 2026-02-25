@@ -156,9 +156,10 @@ work task new "refactor auth module" --attach</code></pre>
 
 <p>List all tasks. Alias: <code>work task ls</code>.</p>
 
-<h3>work task remove ID</h3>
+<h3>work task remove ID [--skip-provider]</h3>
 
-<p>Remove a task and its associated environment. Alias: <code>work task rm</code>.</p>
+<p>Remove a task and its associated environment. Alias: <code>work task rm</code>.
+Use <code>--skip-provider</code> to force-delete database records without calling the provider.</p>
 
 <h3>work task logs ID [--follow]</h3>
 
@@ -198,10 +199,11 @@ next available match.</p>
 <p>Update a pooled environment. For <code>git-worktree</code>, this
 fetches from origin and merges.</p>
 
-<h3>work env remove ID</h3>
+<h3>work env remove ID [--skip-provider]</h3>
 
 <p>Remove an environment. Alias: <code>work env rm</code>. Cleans up
-the worktree or calls the provider's <code>remove</code> action.</p>
+the worktree or calls the provider's <code>remove</code> action.
+Use <code>--skip-provider</code> to force-delete database records without calling the provider.</p>
 
 <h3>work env list [--format FORMAT]</h3>
 

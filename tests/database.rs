@@ -947,6 +947,262 @@ command = "{}"
 }
 
 #[test]
+fn environment_remove_skip_provider_force_deletes_after_provider_failure() {
+    let d = DaemonFixture::start();
+
+    let provider_script = d.work_dir.path().join("always-fail-remove-env.sh");
+    write_executable_script(
+        &provider_script,
+        r#"#!/bin/sh
+set -eu
+action="$1"
+case "$action" in
+  prepare|update|claim)
+    echo '{}'
+    ;;
+  remove)
+    exit 1
+    ;;
+  run)
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[environments.providers.removefail]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("remove-env-skip-provider-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "remove-env-skip-provider-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let prepare_out = d
+        .assert_cmd()
+        .args([
+            "env",
+            "prepare",
+            "remove-env-skip-provider-proj",
+            "--provider",
+            "removefail",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let env: serde_json::Value = serde_json::from_slice(&prepare_out).unwrap();
+    let env_id = env["id"].as_str().unwrap().to_string();
+    wait_for_env_status(&d, &env_id, "pool", Duration::from_secs(8));
+
+    d.assert_cmd()
+        .args(["env", "rm", &env_id])
+        .assert()
+        .success();
+    wait_for_env_status(&d, &env_id, "failed", Duration::from_secs(12));
+
+    d.assert_cmd()
+        .args(["env", "rm", &env_id, "--skip-provider"])
+        .assert()
+        .success();
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let envs_out = d
+            .assert_cmd()
+            .args(["env", "ls", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let envs: Vec<serde_json::Value> = serde_json::from_slice(&envs_out).unwrap();
+        if envs
+            .iter()
+            .all(|candidate| candidate["id"].as_str() != Some(env_id.as_str()))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("environment not force-deleted with --skip-provider");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn task_remove_skip_provider_force_deletes_after_provider_failure() {
+    let d = DaemonFixture::start();
+
+    let provider_script = d.work_dir.path().join("always-fail-remove-task-env.sh");
+    write_executable_script(
+        &provider_script,
+        r#"#!/bin/sh
+set -eu
+action="$1"
+case "$action" in
+  prepare|update|claim)
+    echo '{}'
+    ;;
+  remove)
+    exit 1
+    ;;
+  run)
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[tasks.providers.noop]
+type = "command"
+command = "sh"
+args = ["-c", "true"]
+
+[environments.providers.removefail]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("remove-task-skip-provider-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "remove-task-skip-provider-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let task_create = d
+        .assert_cmd()
+        .args([
+            "task",
+            "new",
+            "remove-skip-provider-case",
+            "--project",
+            "remove-task-skip-provider-proj",
+            "--provider",
+            "noop",
+            "--env-provider",
+            "removefail",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let task: serde_json::Value = serde_json::from_slice(&task_create).unwrap();
+    let task_id = task["id"].as_str().unwrap().to_string();
+    let env_id = task["environment_id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let tasks_out = d
+            .assert_cmd()
+            .args(["task", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&tasks_out).unwrap();
+        let status = tasks
+            .iter()
+            .find(|candidate| candidate["id"].as_str() == Some(task_id.as_str()))
+            .and_then(|t| t["status"].as_str())
+            .unwrap_or_default();
+        if status == "complete" || status == "failed" {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for task completion before remove");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    d.assert_cmd()
+        .args(["task", "rm", &task_id])
+        .assert()
+        .success();
+    wait_for_env_status(&d, &env_id, "failed", Duration::from_secs(12));
+
+    d.assert_cmd()
+        .args(["task", "rm", &task_id, "--skip-provider"])
+        .assert()
+        .success();
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let tasks_out = d
+            .assert_cmd()
+            .args(["task", "ls", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&tasks_out).unwrap();
+        let task_present = tasks
+            .iter()
+            .any(|candidate| candidate["id"].as_str() == Some(task_id.as_str()));
+
+        let envs_out = d
+            .assert_cmd()
+            .args(["env", "ls", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let envs: Vec<serde_json::Value> = serde_json::from_slice(&envs_out).unwrap();
+        let env_present = envs
+            .iter()
+            .any(|candidate| candidate["id"].as_str() == Some(env_id.as_str()));
+
+        if !task_present && !env_present {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("task/environment not force-deleted with --skip-provider");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
 fn task_new_claims_pool_environment_and_task_remove_deletes_paired_environment() {
     let d = DaemonFixture::start();
 

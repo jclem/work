@@ -178,7 +178,7 @@ work project rm NAME                    Remove a project
 work task new DESC [--provider P]       Create and run a task
   [--env-provider P] [--attach]
 work task list [--format FORMAT]        List tasks
-work task rm ID                         Remove a task and its environment
+work task rm ID [--skip-provider]       Remove a task and its environment
 
 work task logs ID [--follow]            View task output
 work env logs ID [--follow]             View environment provider output
@@ -187,7 +187,7 @@ work env create [--provider P]          Create and claim an environment
 work env prepare [--provider P]         Prepare an environment (pool it)
 work env claim [ID]                     Claim a pooled environment
 work env update ID                      Update a pooled environment
-work env rm ID                          Remove an environment
+work env rm ID [--skip-provider]        Remove an environment
 work env list [--format FORMAT]         List environments
 work env provider list                  List available providers
 

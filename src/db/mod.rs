@@ -531,6 +531,33 @@ pub fn stage_remove_environment(id: &str) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+pub fn force_delete_environment(id: &str) -> Result<(), anyhow::Error> {
+    let mut conn = connect()?;
+    let tx = conn.transaction()?;
+
+    let task_for_environment: Option<String> = tx
+        .query_row(
+            "SELECT id FROM tasks WHERE environment_id = ?1 LIMIT 1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(task_id) = task_for_environment {
+        anyhow::bail!("environment {id} is attached to task {task_id}; remove the task instead");
+    }
+
+    let rows = tx.execute(
+        "DELETE FROM environments WHERE id = ?1",
+        rusqlite::params![id],
+    )?;
+    if rows == 0 {
+        anyhow::bail!("environment not found: {id}");
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn stage_remove_task(task_id: &str) -> Result<(), anyhow::Error> {
     let mut conn = connect()?;
     let tx = conn.transaction()?;
@@ -567,6 +594,34 @@ pub fn stage_remove_task(task_id: &str) -> Result<(), anyhow::Error> {
     });
     let dedupe = format!("remove_task:task:{task_id}");
     let _ = insert_job_tx(&tx, "remove_task", &payload, Some(&dedupe))?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn force_delete_task(task_id: &str) -> Result<(), anyhow::Error> {
+    let mut conn = connect()?;
+    let tx = conn.transaction()?;
+
+    let env_id: String = tx
+        .query_row(
+            "SELECT environment_id FROM tasks WHERE id = ?1",
+            rusqlite::params![task_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| anyhow::anyhow!("task not found: {task_id}"))?;
+
+    tx.execute(
+        "DELETE FROM tasks WHERE id = ?1",
+        rusqlite::params![task_id],
+    )?;
+    let env_rows = tx.execute(
+        "DELETE FROM environments WHERE id = ?1",
+        rusqlite::params![&env_id],
+    )?;
+    if env_rows == 0 {
+        anyhow::bail!("environment not found: {env_id}");
+    }
 
     tx.commit()?;
     Ok(())
