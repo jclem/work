@@ -46,6 +46,25 @@ async fn process_job(job: db::Job) {
 
     if let Err(e) = &result {
         tracing::error!(id = %job.id, error = %e, "job failed");
+        if job.job_type == "run_task" {
+            if let Some(task_id) = job.payload["task_id"].as_str() {
+                if let Err(update_err) = db::update_task_status(task_id, "failed") {
+                    tracing::error!(
+                        id = %job.id,
+                        task_id = %task_id,
+                        error = %update_err,
+                        "failed to mark task as failed after run_task job failure"
+                    );
+                } else {
+                    super::events::notify();
+                }
+            } else {
+                tracing::error!(
+                    id = %job.id,
+                    "run_task job failed but payload did not include task_id"
+                );
+            }
+        }
     }
 
     if let Err(e) = db::update_job_status(&job.id, status) {
@@ -58,6 +77,7 @@ async fn prepare_environment(job: &db::Job) -> anyhow::Result<()> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("job payload missing env_id"))?
         .to_string();
+    let task_id = job.payload["task_id"].as_str().map(|s| s.to_string());
 
     let env = db::get_environment(&env_id)?;
     let project = db::get_project(&env.project_id)?;
@@ -66,13 +86,51 @@ async fn prepare_environment(job: &db::Job) -> anyhow::Result<()> {
     tracing::info!(env_id = %env_id, provider = %provider_name, "preparing environment");
 
     let eid = env_id.clone();
-    let metadata = tokio::task::spawn_blocking(move || {
+    let metadata_result = tokio::task::spawn_blocking(move || {
         let provider = crate::environment::get_provider(&provider_name)?;
         provider.prepare(&project, &eid)
     })
-    .await??;
+    .await?;
+
+    let metadata = match metadata_result {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            if let Err(update_err) = db::fail_preparing_environment(&env_id) {
+                tracing::error!(
+                    env_id = %env_id,
+                    error = %update_err,
+                    "failed to mark preparing environment as failed"
+                );
+            }
+            if let Some(task_id) = task_id.as_deref() {
+                if let Err(update_err) = db::update_task_status(task_id, "failed") {
+                    tracing::error!(
+                        task_id = %task_id,
+                        error = %update_err,
+                        "failed to mark task as failed after environment prepare failure"
+                    );
+                }
+            }
+            super::events::notify();
+            return Err(e);
+        }
+    };
 
     db::finish_preparing_environment(&env_id, &metadata)?;
+    if let Some(task_id) = task_id.as_deref() {
+        if let Err(e) = db::create_job(
+            "run_task",
+            &serde_json::json!({
+                "task_id": task_id,
+                "env_id": env_id,
+            }),
+        ) {
+            let _ = db::update_environment_status(&env_id, "failed");
+            let _ = db::update_task_status(task_id, "failed");
+            super::events::notify();
+            return Err(e);
+        }
+    }
     super::events::notify();
 
     tracing::info!(env_id = %env_id, "environment prepared");
@@ -112,51 +170,33 @@ async fn run_task(job: &db::Job) -> anyhow::Result<()> {
     let task_id = job.payload["task_id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("job payload missing task_id"))?;
-    let env_provider = job.payload["env_provider"]
+    let env_id = job.payload["env_id"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("job payload missing env_provider"))?;
+        .ok_or_else(|| anyhow::anyhow!("job payload missing env_id"))?;
 
     let task = db::get_task(task_id)?;
-    let project = db::get_project(&task.project_id)?;
-
-    let env = match db::claim_next_environment(env_provider, &project.id) {
-        Ok(env) => {
-            let provider_name = env.provider.clone();
-            let meta = env.metadata.clone();
-            let new_metadata = tokio::task::spawn_blocking(move || {
-                let provider = crate::environment::get_provider(&provider_name)?;
-                provider.claim(&meta)
-            })
-            .await??;
-            db::update_environment_metadata(&env.id, &new_metadata)?;
+    let env = db::get_environment(env_id)?;
+    db::claim_environment(&env.id)?;
+    let provider_name = env.provider.clone();
+    let meta = env.metadata.clone();
+    let new_metadata_result = tokio::task::spawn_blocking(move || {
+        let provider = crate::environment::get_provider(&provider_name)?;
+        provider.claim(&meta)
+    })
+    .await?;
+    let env = match new_metadata_result {
+        Ok(metadata) => {
+            db::update_environment_metadata(&env.id, &metadata)?;
             db::get_environment(&env.id)?
         }
-        Err(_) => {
-            let env_provider = env_provider.to_string();
-            let env_id = crate::id::new_id();
-            let project_clone = project.clone();
-            let eid = env_id.clone();
-            let ep = env_provider.clone();
-            let metadata = tokio::task::spawn_blocking(move || {
-                let provider = crate::environment::get_provider(&ep)?;
-                provider.prepare(&project_clone, &eid)
-            })
-            .await??;
-            let env = db::create_environment(&env_id, &project.id, &env_provider, &metadata)?;
-            db::claim_environment(&env.id)?;
-            let provider_name = env.provider.clone();
-            let meta = env.metadata.clone();
-            let new_metadata = tokio::task::spawn_blocking(move || {
-                let provider = crate::environment::get_provider(&provider_name)?;
-                provider.claim(&meta)
-            })
-            .await??;
-            db::update_environment_metadata(&env.id, &new_metadata)?;
-            db::get_environment(&env.id)?
+        Err(e) => {
+            db::update_environment_status(&env.id, "failed")?;
+            super::events::notify();
+            return Err(e);
         }
     };
 
-    db::start_task(task_id, &env.id)?;
+    db::start_task(task_id)?;
     super::events::notify();
 
     let task_provider_config = config.get_task_provider(&task.provider)?;

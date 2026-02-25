@@ -1,5 +1,7 @@
 mod common;
 
+use std::time::{Duration, Instant};
+
 use predicates::prelude::*;
 
 use common::DaemonFixture;
@@ -305,4 +307,158 @@ fn project_remove_fails_for_nonexistent_project() {
         .args(["project", "rm", "nonexistent"])
         .assert()
         .failure();
+}
+
+#[test]
+fn task_creation_failure_persists_failed_environment() {
+    let d = DaemonFixture::start();
+
+    let provider_script = d.work_dir.path().join("fail-env-provider.sh");
+    std::fs::write(
+        &provider_script,
+        r#"#!/bin/sh
+set -eu
+action="$1"
+case "$action" in
+  prepare)
+    exit 1
+    ;;
+  update|claim)
+    echo '{}'
+    ;;
+  remove)
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&provider_script).unwrap().permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&provider_script, perms).unwrap();
+    }
+
+    let config_dir = d.work_dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"[tasks.providers.noop]
+type = "command"
+command = "sh"
+args = ["-c", "true"]
+
+[environments.providers.failing]
+type = "script"
+command = "{}"
+"#,
+            provider_script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let proj = d.work_dir.path().join("task-proj");
+    std::fs::create_dir(&proj).unwrap();
+    d.assert_cmd()
+        .args(["project", "new", "task-proj", "--path"])
+        .arg(&proj)
+        .assert()
+        .success();
+
+    let task_create = d
+        .assert_cmd()
+        .args([
+            "task",
+            "new",
+            "should fail env prepare",
+            "--project",
+            "task-proj",
+            "--provider",
+            "noop",
+            "--env-provider",
+            "failing",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success();
+    let task_json = String::from_utf8(task_create.get_output().stdout.clone()).unwrap();
+    let task: serde_json::Value = serde_json::from_str(&task_json).unwrap();
+    let task_id = task["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let (task_status, task_env_id, env_status) = loop {
+        let task_list_out = d
+            .assert_cmd()
+            .args(["task", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&task_list_out).unwrap();
+        let Some(task) = tasks
+            .iter()
+            .find(|candidate| candidate["id"].as_str() == Some(&task_id))
+        else {
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for task to appear");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+
+        let status = task["status"].as_str().unwrap_or_default().to_string();
+        let env_id = task["environment_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        if status != "failed" || env_id.is_empty() {
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for failed task with environment_id");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+
+        let env_list_out = d
+            .assert_cmd()
+            .args(["environment", "list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let envs: Vec<serde_json::Value> = serde_json::from_slice(&env_list_out).unwrap();
+        let Some(env) = envs
+            .iter()
+            .find(|candidate| candidate["id"].as_str() == Some(env_id.as_str()))
+        else {
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for environment entry");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+
+        break (
+            status,
+            env_id,
+            env["status"].as_str().unwrap_or_default().to_string(),
+        );
+    };
+
+    assert_eq!(task_status, "failed");
+    assert!(!task_env_id.is_empty());
+    assert_eq!(env_status, "failed");
 }

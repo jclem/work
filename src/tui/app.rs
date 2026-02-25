@@ -163,9 +163,7 @@ impl App {
             if !self.collapsed_projects.contains(&pi) {
                 for ti in project_tasks {
                     self.tree_rows.push(TreeRow::Task(ti));
-                    if self.tasks[ti].environment_id.is_some()
-                        && !self.collapsed_tasks.contains(&ti)
-                    {
+                    if !self.collapsed_tasks.contains(&ti) {
                         self.tree_rows.push(TreeRow::TaskEnvironment(ti));
                     }
                 }
@@ -184,20 +182,9 @@ impl App {
         if !orphan_tasks.is_empty() {
             for ti in orphan_tasks {
                 self.tree_rows.push(TreeRow::Task(ti));
-                if self.tasks[ti].environment_id.is_some() && !self.collapsed_tasks.contains(&ti) {
+                if !self.collapsed_tasks.contains(&ti) {
                     self.tree_rows.push(TreeRow::TaskEnvironment(ti));
                 }
-            }
-        }
-    }
-
-    /// Returns the project index (into self.projects) for the currently selected tree row.
-    fn selected_project_index(&self) -> Option<usize> {
-        match self.tree_rows.get(self.selected)? {
-            TreeRow::Project(pi) => Some(*pi),
-            TreeRow::Task(ti) | TreeRow::TaskEnvironment(ti) => {
-                let project_id = &self.tasks[*ti].project_id;
-                self.projects.iter().position(|p| p.id == *project_id)
             }
         }
     }
@@ -215,17 +202,10 @@ impl App {
             }
             Some(TreeRow::Task(ti)) => {
                 let ti = *ti;
-                if self.tasks[ti].environment_id.is_some() {
-                    // Task has children — collapse it.
-                    self.collapsed_tasks.insert(ti);
-                    self.rebuild_tree();
-                    self.clamp_selected();
-                } else if let Some(pi) = self.selected_project_index() {
-                    // No children — collapse parent project.
-                    self.collapsed_projects.insert(pi);
-                    self.rebuild_tree();
-                    self.move_selected_to_project(pi);
-                }
+                // Task has children — collapse it.
+                self.collapsed_tasks.insert(ti);
+                self.rebuild_tree();
+                self.clamp_selected();
             }
             Some(TreeRow::TaskEnvironment(ti)) => {
                 let ti = *ti;
@@ -275,9 +255,7 @@ impl App {
             self.collapsed_projects.insert(pi);
         }
         for ti in 0..self.tasks.len() {
-            if self.tasks[ti].environment_id.is_some() {
-                self.collapsed_tasks.insert(ti);
-            }
+            self.collapsed_tasks.insert(ti);
         }
         self.rebuild_tree();
         self.clamp_selected();

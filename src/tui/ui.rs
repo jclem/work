@@ -194,14 +194,10 @@ fn draw_task_list_tree(frame: &mut Frame, app: &App, tick_count: usize, area: Re
                 TreeRow::Task(ti) => {
                     let task = &app.tasks[*ti];
                     let status = status_span(&task.status, tick_count);
-                    let prefix = if task.environment_id.is_some() {
-                        if app.is_task_collapsed(*ti) {
-                            "  ├▶"
-                        } else {
-                            "  ├▼"
-                        }
+                    let prefix = if app.is_task_collapsed(*ti) {
+                        "  ├▶"
                     } else {
-                        "  ├ "
+                        "  ├▼"
                     };
                     Row::new(vec![Cell::from(Line::from(vec![
                         Span::styled(prefix, Style::default().fg(Color::DarkGray)),
@@ -213,21 +209,18 @@ fn draw_task_list_tree(frame: &mut Frame, app: &App, tick_count: usize, area: Re
                 }
                 TreeRow::TaskEnvironment(ti) => {
                     let task = &app.tasks[*ti];
-                    let (env_id_str, env_status) = if let Some(ref eid) = task.environment_id {
-                        if let Some(env) = app.find_environment(eid) {
+                    let (env_id_str, env_status) =
+                        if let Some(env) = app.find_environment(&task.environment_id) {
                             (
                                 short_id(&env.id).to_string(),
                                 status_span(&env.status, tick_count),
                             )
                         } else {
                             (
-                                short_id(eid).to_string(),
+                                short_id(&task.environment_id).to_string(),
                                 Span::styled("?", Style::default().fg(Color::DarkGray)),
                             )
-                        }
-                    } else {
-                        return Row::new(vec![Cell::from("")]);
-                    };
+                        };
                     Row::new(vec![Cell::from(Line::from(vec![
                         Span::styled("  │ └ ", Style::default().fg(Color::DarkGray)),
                         Span::styled(

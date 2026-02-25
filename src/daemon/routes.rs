@@ -313,12 +313,17 @@ pub struct CreateTaskRequest {
 
 pub async fn create_task(Json(body): Json<CreateTaskRequest>) -> impl IntoResponse {
     let result = (|| {
-        let task = crate::db::create_task(&body.project_id, &body.provider, &body.description)?;
+        let _project = crate::db::get_project(&body.project_id)?;
+        let env_id = crate::id::new_id();
+        let env =
+            crate::db::create_preparing_environment(&env_id, &body.project_id, &body.env_provider)?;
+        let task =
+            crate::db::create_task(&env.id, &body.project_id, &body.provider, &body.description)?;
         crate::db::create_job(
-            "run_task",
+            "prepare_environment",
             &serde_json::json!({
                 "task_id": task.id,
-                "env_provider": body.env_provider,
+                "env_id": env.id,
             }),
         )?;
         Ok::<_, anyhow::Error>(task)
@@ -374,16 +379,14 @@ pub async fn get_task(Path(id): Path<String>) -> impl IntoResponse {
 pub async fn remove_task(Path(id): Path<String>) -> impl IntoResponse {
     let result = (|| {
         let task = crate::db::get_task(&id)?;
-        if let Some(env_id) = &task.environment_id {
-            let env = crate::db::get_environment(env_id)?;
-            crate::db::update_environment_status(&env.id, "removing")?;
-            crate::db::create_job(
-                "remove_environment",
-                &json!({
-                    "env_id": env.id,
-                }),
-            )?;
-        }
+        let env = crate::db::get_environment(&task.environment_id)?;
+        crate::db::update_environment_status(&env.id, "removing")?;
+        crate::db::create_job(
+            "remove_environment",
+            &json!({
+                "env_id": env.id,
+            }),
+        )?;
         crate::db::delete_task(&id)?;
         if let Ok(log_path) = crate::paths::task_log_path(&id) {
             let _ = std::fs::remove_file(log_path);

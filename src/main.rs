@@ -438,10 +438,7 @@ fn print_task(task: &db::Task, format: &OutputFormat) -> anyhow::Result<()> {
             );
             println!("  \x1b[1mprovider:\x1b[0m      {}", task.provider);
             println!("  \x1b[1mproject:\x1b[0m       {}", task.project_id);
-            println!(
-                "  \x1b[1menvironment:\x1b[0m   {}",
-                task.environment_id.as_deref().unwrap_or("-")
-            );
+            println!("  \x1b[1menvironment:\x1b[0m   {}", task.environment_id);
             println!("  \x1b[1mdescription:\x1b[0m   {}", task.description);
         }
         OutputFormat::Plain => {
