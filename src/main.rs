@@ -298,7 +298,7 @@ fn complete_env_providers(current: &std::ffi::OsStr) -> Vec<CompletionCandidate>
     environment::list_providers()
         .into_iter()
         .filter(|p| p.starts_with(current))
-        .map(|p| CompletionCandidate::new(p))
+        .map(CompletionCandidate::new)
         .collect()
 }
 
@@ -311,7 +311,7 @@ fn complete_task_providers(current: &std::ffi::OsStr) -> Vec<CompletionCandidate
         .unwrap_or_default()
         .into_iter()
         .filter(|p| p.starts_with(current))
-        .map(|p| CompletionCandidate::new(p))
+        .map(CompletionCandidate::new)
         .collect()
 }
 

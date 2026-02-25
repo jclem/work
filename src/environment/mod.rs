@@ -28,10 +28,10 @@ pub trait EnvironmentProvider {
 pub fn list_providers() -> Vec<String> {
     let mut providers = vec!["git-worktree".to_string()];
 
-    if let Ok(config) = crate::config::load() {
-        if let Some(envs) = &config.environments {
-            providers.extend(envs.providers.keys().cloned());
-        }
+    if let Ok(config) = crate::config::load()
+        && let Some(envs) = &config.environments
+    {
+        providers.extend(envs.providers.keys().cloned());
     }
 
     providers
