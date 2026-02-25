@@ -1,10 +1,9 @@
-# Client/Server Scheduling Audit and Recommendations (2026-02-25)
+# Client/Server Async Staging Audit Recommendations
 
-This audit reviews `work` CLI -> daemon API -> DB/job worker behavior, with focus on transactional staging, async execution boundaries, idempotency, and client-observable behavior.
+Date: 2026-02-25
+Scope: CLI -> daemon API -> SQLite staging -> job worker execution, with focus on async provider boundaries, transactional staging, idempotency, and client-visible behavior.
 
-## Scope
-
-Files reviewed:
+## Files Reviewed
 
 - `src/main.rs`
 - `src/client.rs`
@@ -21,10 +20,10 @@ Files reviewed:
 
 The current design partially matches the intended model:
 
-- `task new` now returns `202` quickly and stages task+env records before provider work.
+- `task new` returns `202` quickly and stages task+env records before provider work.
 - provider work for task execution is in jobs (`prepare_environment`, `run_task`, `remove_environment`).
 
-However, there are still major gaps relative to the target architecture:
+Major gaps remain relative to the target architecture:
 
 1. API staging writes are not atomic in a single DB transaction.
 2. Several provider-touching endpoints are still synchronous in request handling.
@@ -43,9 +42,9 @@ However, there are still major gaps relative to the target architecture:
 
 - `environment prepare`: async/staged (`202` + `prepare_environment` job).
 - `environment remove`: async/staged (`202` + `remove_environment` job).
-- `environment update`: **sync provider execution in route**.
-- `environment claim`: **sync provider execution in route**.
-- `environment claim-next`: **sync provider execution in route**.
+- `environment update`: sync provider execution in route.
+- `environment claim`: sync provider execution in route.
+- `environment claim-next`: sync provider execution in route.
 
 Recommendation: all provider-backed environment operations should enqueue jobs and return `202`.
 
@@ -272,4 +271,4 @@ Worker resolves process cancellation/cleanup and env removal idempotently.
 
 ## Conclusion
 
-The codebase is close to the desired direction for `task new`, but still mixed in execution model. The highest-value next step is to finish the async boundary rule consistently: **any provider involvement must happen only in worker jobs, never inside request handlers**, and all request-side staging must be done in a single DB transaction.
+The codebase is close to the desired direction for `task new`, but still mixed in execution model. The highest-value next step is to finish the async boundary rule consistently: provider involvement should happen only in worker jobs, and request-side staging should be done in a single DB transaction.
