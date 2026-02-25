@@ -5,10 +5,17 @@ use crate::paths;
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
+    pub daemon: Option<DaemonConfig>,
     pub default_environment_provider: Option<String>,
     pub default_task_provider: Option<String>,
     pub tasks: Option<TasksConfig>,
     pub environments: Option<EnvironmentsConfig>,
+}
+
+#[derive(Default, serde::Deserialize)]
+pub struct DaemonConfig {
+    #[serde(default)]
+    pub debug: bool,
 }
 
 #[derive(serde::Deserialize)]
