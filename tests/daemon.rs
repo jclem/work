@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
+use rusqlite::Connection;
 use tempfile::TempDir;
 
 use common::{DaemonFixture, wait_for_path, wait_for_path_removed};
@@ -246,4 +247,44 @@ fn api_reset_database() {
         "GET /projects HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(resp.contains("[]"));
+}
+
+#[test]
+fn running_job_with_expired_lease_is_reclaimed() {
+    let d = DaemonFixture::start();
+    let db_path = d.work_dir.path().join("data/database.sqlite3");
+    let conn = Connection::open(db_path).unwrap();
+
+    let job_id = "job-expired-lease-test";
+    let now = chrono::Utc::now().to_rfc3339();
+    let expired = (chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
+    conn.execute(
+        "INSERT INTO jobs (id, type, payload, status, dedupe_key, attempt, not_before, lease_expires_at, last_error, created_at, updated_at)
+         VALUES (?1, 'unknown_job_type', '{}', 'running', NULL, 1, NULL, ?2, NULL, ?3, ?3)",
+        rusqlite::params![job_id, &expired, &now],
+    )
+    .unwrap();
+    drop(conn);
+
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        let conn = Connection::open(d.work_dir.path().join("data/database.sqlite3")).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM jobs WHERE id = ?1",
+                rusqlite::params![job_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        if status == "failed" {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for expired running job to be reclaimed");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }

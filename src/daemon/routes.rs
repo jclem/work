@@ -131,22 +131,16 @@ pub async fn reset_database() -> impl IntoResponse {
 pub struct PrepareEnvironmentRequest {
     pub project_id: String,
     pub provider: String,
+    #[serde(default)]
+    pub claim_after_prepare: bool,
 }
 
 pub async fn prepare_environment(Json(body): Json<PrepareEnvironmentRequest>) -> impl IntoResponse {
-    let result = (|| {
-        let _project = crate::db::get_project(&body.project_id)?;
-        let env_id = crate::id::new_id();
-        let env =
-            crate::db::create_preparing_environment(&env_id, &body.project_id, &body.provider)?;
-        crate::db::create_job(
-            "prepare_environment",
-            &json!({
-                "env_id": env.id,
-            }),
-        )?;
-        Ok::<_, anyhow::Error>(env)
-    })();
+    let result = crate::db::stage_prepare_environment(
+        &body.project_id,
+        &body.provider,
+        body.claim_after_prepare,
+    );
 
     match result {
         Ok(env) => {
@@ -180,22 +174,13 @@ pub async fn list_environments() -> impl IntoResponse {
 }
 
 pub async fn update_environment(Path(id): Path<String>) -> impl IntoResponse {
-    let result = (|| {
-        let env = crate::db::get_environment(&id)?;
-        if env.status != "pool" {
-            anyhow::bail!("environment {id} is not in the pool");
-        }
-        let provider = crate::environment::get_provider(&env.provider)?;
-        let new_metadata = provider.update(&env.metadata)?;
-        crate::db::update_environment_metadata(&id, &new_metadata)?;
-        crate::db::get_environment(&id)
-    })();
+    let result = crate::db::stage_update_environment(&id);
 
     match result {
         Ok(env) => {
-            tracing::debug!(id = %env.id, "environment updated");
+            tracing::debug!(id = %env.id, "environment update queued");
             super::events::notify();
-            (StatusCode::OK, Json(json!(env))).into_response()
+            (StatusCode::ACCEPTED, Json(json!(env))).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to update environment");
@@ -209,20 +194,13 @@ pub async fn update_environment(Path(id): Path<String>) -> impl IntoResponse {
 }
 
 pub async fn claim_environment(Path(id): Path<String>) -> impl IntoResponse {
-    let result = (|| {
-        let env = crate::db::get_environment(&id)?;
-        let provider = crate::environment::get_provider(&env.provider)?;
-        let new_metadata = provider.claim(&env.metadata)?;
-        crate::db::claim_environment(&id)?;
-        crate::db::update_environment_metadata(&id, &new_metadata)?;
-        crate::db::get_environment(&id)
-    })();
+    let result = crate::db::stage_claim_environment(&id);
 
     match result {
         Ok(env) => {
-            tracing::debug!(id = %env.id, provider = %env.provider, "environment claimed");
+            tracing::debug!(id = %env.id, provider = %env.provider, "environment claim queued");
             super::events::notify();
-            (StatusCode::OK, Json(json!(env))).into_response()
+            (StatusCode::ACCEPTED, Json(json!(env))).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to claim environment");
@@ -244,19 +222,13 @@ pub struct ClaimNextEnvironmentRequest {
 pub async fn claim_next_environment(
     Json(body): Json<ClaimNextEnvironmentRequest>,
 ) -> impl IntoResponse {
-    let result = (|| {
-        let env = crate::db::claim_next_environment(&body.provider, &body.project_id)?;
-        let provider = crate::environment::get_provider(&env.provider)?;
-        let new_metadata = provider.claim(&env.metadata)?;
-        crate::db::update_environment_metadata(&env.id, &new_metadata)?;
-        crate::db::get_environment(&env.id)
-    })();
+    let result = crate::db::stage_claim_next_environment(&body.provider, &body.project_id);
 
     match result {
         Ok(env) => {
-            tracing::debug!(id = %env.id, provider = %env.provider, project_id = %env.project_id, "environment claimed (next)");
+            tracing::debug!(id = %env.id, provider = %env.provider, project_id = %env.project_id, "environment claim queued (next)");
             super::events::notify();
-            (StatusCode::OK, Json(json!(env))).into_response()
+            (StatusCode::ACCEPTED, Json(json!(env))).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to claim next environment");
@@ -270,20 +242,7 @@ pub async fn claim_next_environment(
 }
 
 pub async fn remove_environment(Path(id): Path<String>) -> impl IntoResponse {
-    let result = (|| {
-        let env = crate::db::get_environment(&id)?;
-        if env.status == "removing" {
-            anyhow::bail!("environment {id} is already being removed");
-        }
-        crate::db::update_environment_status(&id, "removing")?;
-        crate::db::create_job(
-            "remove_environment",
-            &json!({
-                "env_id": env.id,
-            }),
-        )?;
-        Ok::<_, anyhow::Error>(())
-    })();
+    let result = crate::db::stage_remove_environment(&id);
 
     match result {
         Ok(()) => {
@@ -295,6 +254,8 @@ pub async fn remove_environment(Path(id): Path<String>) -> impl IntoResponse {
             let msg = e.to_string();
             let status = if msg.contains("not found") {
                 StatusCode::NOT_FOUND
+            } else if msg.contains("attached to task") {
+                StatusCode::CONFLICT
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
@@ -312,22 +273,12 @@ pub struct CreateTaskRequest {
 }
 
 pub async fn create_task(Json(body): Json<CreateTaskRequest>) -> impl IntoResponse {
-    let result = (|| {
-        let _project = crate::db::get_project(&body.project_id)?;
-        let env_id = crate::id::new_id();
-        let env =
-            crate::db::create_preparing_environment(&env_id, &body.project_id, &body.env_provider)?;
-        let task =
-            crate::db::create_task(&env.id, &body.project_id, &body.provider, &body.description)?;
-        crate::db::create_job(
-            "prepare_environment",
-            &serde_json::json!({
-                "task_id": task.id,
-                "env_id": env.id,
-            }),
-        )?;
-        Ok::<_, anyhow::Error>(task)
-    })();
+    let result = crate::db::stage_task_create(
+        &body.project_id,
+        &body.provider,
+        &body.env_provider,
+        &body.description,
+    );
 
     match result {
         Ok(task) => {
@@ -377,26 +328,11 @@ pub async fn get_task(Path(id): Path<String>) -> impl IntoResponse {
 }
 
 pub async fn remove_task(Path(id): Path<String>) -> impl IntoResponse {
-    let result = (|| {
-        let task = crate::db::get_task(&id)?;
-        let env = crate::db::get_environment(&task.environment_id)?;
-        crate::db::update_environment_status(&env.id, "removing")?;
-        crate::db::create_job(
-            "remove_environment",
-            &json!({
-                "env_id": env.id,
-            }),
-        )?;
-        crate::db::delete_task(&id)?;
-        if let Ok(log_path) = crate::paths::task_log_path(&id) {
-            let _ = std::fs::remove_file(log_path);
-        }
-        Ok::<(), anyhow::Error>(())
-    })();
+    let result = crate::db::stage_remove_task(&id);
 
     match result {
         Ok(()) => {
-            tracing::debug!(id = %id, "task removed");
+            tracing::debug!(id = %id, "task removal queued");
             super::events::notify();
             StatusCode::ACCEPTED.into_response()
         }

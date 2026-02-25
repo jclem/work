@@ -1,26 +1,45 @@
-use tokio::sync::watch;
+use std::sync::Arc;
+
+use tokio::sync::{Semaphore, oneshot, watch};
 
 use crate::db;
 
+const POLL_INTERVAL_MS: u64 = 100;
+const CLAIM_BATCH_LIMIT: usize = 8;
+const MAX_CONCURRENT_JOBS: usize = 8;
+const JOB_LEASE_SECONDS: i64 = 30;
+const JOB_LEASE_RENEW_INTERVAL_SECONDS: u64 = 10;
+const RETRY_LIMIT: i64 = 2;
+
 pub async fn run(mut shutdown: watch::Receiver<bool>) {
     tracing::info!("job processor started");
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_JOBS));
 
     loop {
-        match db::claim_pending_jobs() {
-            Ok(jobs) => {
-                for job in jobs {
-                    tokio::spawn(async move {
-                        process_job(job).await;
-                    });
+        let available = permits.available_permits();
+        if available > 0 {
+            let claim_limit = available.min(CLAIM_BATCH_LIMIT);
+            match db::claim_pending_jobs(claim_limit, JOB_LEASE_SECONDS) {
+                Ok(jobs) => {
+                    for job in jobs {
+                        let permits = permits.clone();
+                        tokio::spawn(async move {
+                            let _permit = match permits.acquire_owned().await {
+                                Ok(permit) => permit,
+                                Err(_) => return,
+                            };
+                            process_job(job).await;
+                        });
+                    }
                 }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to claim pending jobs");
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to claim pending jobs");
+                }
             }
         }
 
         tokio::select! {
-            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            _ = tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)) => {}
             _ = shutdown.changed() => {
                 tracing::info!("job processor shutting down");
                 break;
@@ -29,46 +48,121 @@ pub async fn run(mut shutdown: watch::Receiver<bool>) {
     }
 }
 
+fn retry_delay_seconds(attempt: i64) -> i64 {
+    let exp = (attempt.max(1) as u32).min(5);
+    (2_i64.pow(exp)).min(60)
+}
+
+fn spawn_job_lease_heartbeat(job_id: String) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+    let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+    let handle = tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(JOB_LEASE_RENEW_INTERVAL_SECONDS);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {
+                    match db::refresh_job_lease(&job_id, JOB_LEASE_SECONDS) {
+                        Ok(true) => {}
+                        Ok(false) => return,
+                        Err(e) => {
+                            tracing::warn!(id = %job_id, error = %e, "failed to refresh job lease");
+                        }
+                    }
+                }
+                _ = &mut stop_rx => {
+                    return;
+                }
+            }
+        }
+    });
+    (stop_tx, handle)
+}
+
 async fn process_job(job: db::Job) {
-    tracing::info!(id = %job.id, job_type = %job.job_type, "processing job");
+    tracing::info!(
+        id = %job.id,
+        job_type = %job.job_type,
+        attempt = job.attempt,
+        "processing job"
+    );
+    let (lease_stop_tx, lease_handle) = spawn_job_lease_heartbeat(job.id.clone());
 
     let result = match job.job_type.as_str() {
         "prepare_environment" => prepare_environment(&job).await,
+        "update_environment" => update_environment(&job).await,
+        "claim_environment" => claim_environment(&job).await,
         "remove_environment" => remove_environment(&job).await,
+        "remove_task" => remove_task(&job).await,
         "run_task" => run_task(&job).await,
-        other => {
-            tracing::error!(job_type = %other, "unknown job type");
-            Err(anyhow::anyhow!("unknown job type: {other}"))
-        }
+        other => Err(anyhow::anyhow!("unknown job type: {other}")),
     };
+    let _ = lease_stop_tx.send(());
+    let _ = lease_handle.await;
 
-    let status = if result.is_ok() { "complete" } else { "failed" };
-
-    if let Err(e) = &result {
-        tracing::error!(id = %job.id, error = %e, "job failed");
-        if job.job_type == "run_task" {
-            if let Some(task_id) = job.payload["task_id"].as_str() {
-                if let Err(update_err) = db::update_task_status(task_id, "failed") {
-                    tracing::error!(
-                        id = %job.id,
-                        task_id = %task_id,
-                        error = %update_err,
-                        "failed to mark task as failed after run_task job failure"
-                    );
-                } else {
-                    super::events::notify();
-                }
-            } else {
-                tracing::error!(
-                    id = %job.id,
-                    "run_task job failed but payload did not include task_id"
-                );
+    match result {
+        Ok(()) => {
+            if let Err(e) = db::mark_job_complete(&job.id) {
+                tracing::error!(id = %job.id, error = %e, "failed to mark job complete");
             }
         }
-    }
+        Err(e) => {
+            tracing::error!(id = %job.id, error = %e, "job failed");
 
-    if let Err(e) = db::update_job_status(&job.id, status) {
-        tracing::error!(id = %job.id, error = %e, "failed to update job status");
+            let can_retry = job.attempt < RETRY_LIMIT;
+            if can_retry {
+                let delay = retry_delay_seconds(job.attempt);
+                if let Err(requeue_err) = db::requeue_job(&job.id, &e.to_string(), delay) {
+                    tracing::error!(
+                        id = %job.id,
+                        error = %requeue_err,
+                        "failed to requeue failed job"
+                    );
+                    let _ = db::mark_job_failed(&job.id, &e.to_string());
+                    apply_terminal_failure_side_effects(&job);
+                }
+                return;
+            }
+
+            if let Err(mark_err) = db::mark_job_failed(&job.id, &e.to_string()) {
+                tracing::error!(id = %job.id, error = %mark_err, "failed to mark job failed");
+            }
+            apply_terminal_failure_side_effects(&job);
+        }
+    }
+}
+
+fn apply_terminal_failure_side_effects(job: &db::Job) {
+    match job.job_type.as_str() {
+        "prepare_environment" => {
+            if let Some(env_id) = job.payload["env_id"].as_str() {
+                let _ = db::update_environment_status(env_id, "failed");
+            }
+            if let Some(task_id) = job.payload["task_id"].as_str() {
+                let _ = db::update_task_status(task_id, "failed");
+            }
+            super::events::notify();
+        }
+        "run_task" => {
+            if let Some(task_id) = job.payload["task_id"].as_str() {
+                let _ = db::update_task_status(task_id, "failed");
+            }
+            if let Some(env_id) = job.payload["env_id"].as_str() {
+                let _ = db::update_environment_status(env_id, "failed");
+            }
+            super::events::notify();
+        }
+        "claim_environment" | "update_environment" | "remove_environment" => {
+            if let Some(env_id) = job.payload["env_id"].as_str() {
+                let _ = db::update_environment_status(env_id, "failed");
+                super::events::notify();
+            }
+        }
+        "remove_task" => {
+            if let Some(env_id) = job.payload["env_id"].as_str() {
+                let _ = db::update_environment_status(env_id, "failed");
+            }
+            super::events::notify();
+        }
+        _ => {}
     }
 }
 
@@ -78,63 +172,131 @@ async fn prepare_environment(job: &db::Job) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("job payload missing env_id"))?
         .to_string();
     let task_id = job.payload["task_id"].as_str().map(|s| s.to_string());
+    let claim_after_prepare = job.payload["claim_after_prepare"]
+        .as_bool()
+        .unwrap_or(false);
 
     let env = db::get_environment(&env_id)?;
+    if env.status == "pool" || env.status == "in_use" {
+        if let Some(task_id) = task_id.as_deref() {
+            let dedupe = format!("run_task:task:{task_id}");
+            db::create_job_with_dedupe(
+                "run_task",
+                &serde_json::json!({
+                    "task_id": task_id,
+                    "env_id": env_id,
+                }),
+                Some(&dedupe),
+            )?;
+            super::events::notify();
+        }
+        return Ok(());
+    }
+
+    if env.status != "preparing" {
+        anyhow::bail!(
+            "environment {env_id} has unexpected status {} while preparing",
+            env.status
+        );
+    }
+
     let project = db::get_project(&env.project_id)?;
     let provider_name = env.provider.clone();
 
     tracing::info!(env_id = %env_id, provider = %provider_name, "preparing environment");
 
     let eid = env_id.clone();
-    let metadata_result = tokio::task::spawn_blocking(move || {
+    let prepared_metadata = tokio::task::spawn_blocking(move || {
         let provider = crate::environment::get_provider(&provider_name)?;
         provider.prepare(&project, &eid)
     })
-    .await?;
+    .await??;
 
-    let metadata = match metadata_result {
-        Ok(metadata) => metadata,
-        Err(e) => {
-            if let Err(update_err) = db::fail_preparing_environment(&env_id) {
-                tracing::error!(
-                    env_id = %env_id,
-                    error = %update_err,
-                    "failed to mark preparing environment as failed"
-                );
-            }
-            if let Some(task_id) = task_id.as_deref() {
-                if let Err(update_err) = db::update_task_status(task_id, "failed") {
-                    tracing::error!(
-                        task_id = %task_id,
-                        error = %update_err,
-                        "failed to mark task as failed after environment prepare failure"
-                    );
-                }
-            }
-            super::events::notify();
-            return Err(e);
-        }
+    let should_claim = claim_after_prepare || task_id.is_some();
+
+    let final_metadata = if should_claim {
+        let provider_name = env.provider.clone();
+        let meta = prepared_metadata.clone();
+        tokio::task::spawn_blocking(move || {
+            let provider = crate::environment::get_provider(&provider_name)?;
+            provider.claim(&meta)
+        })
+        .await??
+    } else {
+        prepared_metadata
     };
 
-    db::finish_preparing_environment(&env_id, &metadata)?;
+    let final_status = if should_claim { "in_use" } else { "pool" };
+    db::complete_preparing_environment(&env_id, final_status, &final_metadata)?;
+
     if let Some(task_id) = task_id.as_deref() {
-        if let Err(e) = db::create_job(
+        let dedupe = format!("run_task:task:{task_id}");
+        db::create_job_with_dedupe(
             "run_task",
             &serde_json::json!({
                 "task_id": task_id,
                 "env_id": env_id,
             }),
-        ) {
-            let _ = db::update_environment_status(&env_id, "failed");
-            let _ = db::update_task_status(task_id, "failed");
-            super::events::notify();
-            return Err(e);
-        }
+            Some(&dedupe),
+        )?;
     }
+
     super::events::notify();
+    tracing::info!(env_id = %env_id, status = %final_status, "environment prepared");
 
-    tracing::info!(env_id = %env_id, "environment prepared");
+    Ok(())
+}
 
+async fn update_environment(job: &db::Job) -> anyhow::Result<()> {
+    let env_id = job.payload["env_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("job payload missing env_id"))?
+        .to_string();
+    let env = match db::get_environment(&env_id) {
+        Ok(env) => env,
+        Err(_) => return Ok(()),
+    };
+    if env.status != "pool" {
+        return Ok(());
+    }
+
+    let provider_name = env.provider.clone();
+    let metadata = env.metadata.clone();
+    let new_metadata = tokio::task::spawn_blocking(move || {
+        let provider = crate::environment::get_provider(&provider_name)?;
+        provider.update(&metadata)
+    })
+    .await??;
+
+    db::update_environment_metadata(&env_id, &new_metadata)?;
+    super::events::notify();
+    Ok(())
+}
+
+async fn claim_environment(job: &db::Job) -> anyhow::Result<()> {
+    let env_id = job.payload["env_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("job payload missing env_id"))?
+        .to_string();
+
+    let env = match db::get_environment(&env_id) {
+        Ok(env) => env,
+        Err(_) => return Ok(()),
+    };
+    if env.status != "in_use" {
+        return Ok(());
+    }
+
+    let provider_name = env.provider.clone();
+    let metadata = env.metadata.clone();
+    let new_metadata = tokio::task::spawn_blocking(move || {
+        let provider = crate::environment::get_provider(&provider_name)?;
+        provider.claim(&metadata)
+    })
+    .await??;
+
+    db::update_environment_metadata(&env_id, &new_metadata)?;
+    super::events::notify();
     Ok(())
 }
 
@@ -144,7 +306,10 @@ async fn remove_environment(job: &db::Job) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("job payload missing env_id"))?
         .to_string();
 
-    let env = db::get_environment(&env_id)?;
+    let env = match db::get_environment(&env_id) {
+        Ok(env) => env,
+        Err(_) => return Ok(()),
+    };
     let provider_name = env.provider.clone();
     let metadata = env.metadata.clone();
 
@@ -164,6 +329,34 @@ async fn remove_environment(job: &db::Job) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn remove_task(job: &db::Job) -> anyhow::Result<()> {
+    let task_id = job.payload["task_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("job payload missing task_id"))?
+        .to_string();
+    let env_id = job.payload["env_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("job payload missing env_id"))?
+        .to_string();
+
+    if let Ok(env) = db::get_environment(&env_id) {
+        let provider_name = env.provider.clone();
+        let metadata = env.metadata.clone();
+        tokio::task::spawn_blocking(move || {
+            let provider = crate::environment::get_provider(&provider_name)?;
+            provider.remove(&metadata)
+        })
+        .await??;
+    }
+
+    db::delete_task_and_environment(&task_id, &env_id)?;
+    if let Ok(log_path) = crate::paths::task_log_path(&task_id) {
+        let _ = std::fs::remove_file(log_path);
+    }
+    super::events::notify();
+    Ok(())
+}
+
 async fn run_task(job: &db::Job) -> anyhow::Result<()> {
     let config = crate::config::load()?;
 
@@ -175,26 +368,17 @@ async fn run_task(job: &db::Job) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("job payload missing env_id"))?;
 
     let task = db::get_task(task_id)?;
+    if task.status == "complete" || task.status == "failed" {
+        return Ok(());
+    }
+    if task.status == "started" {
+        anyhow::bail!("task {task_id} is already started");
+    }
+
     let env = db::get_environment(env_id)?;
-    db::claim_environment(&env.id)?;
-    let provider_name = env.provider.clone();
-    let meta = env.metadata.clone();
-    let new_metadata_result = tokio::task::spawn_blocking(move || {
-        let provider = crate::environment::get_provider(&provider_name)?;
-        provider.claim(&meta)
-    })
-    .await?;
-    let env = match new_metadata_result {
-        Ok(metadata) => {
-            db::update_environment_metadata(&env.id, &metadata)?;
-            db::get_environment(&env.id)?
-        }
-        Err(e) => {
-            db::update_environment_status(&env.id, "failed")?;
-            super::events::notify();
-            return Err(e);
-        }
-    };
+    if env.status != "in_use" {
+        anyhow::bail!("environment {env_id} is not in use");
+    }
 
     db::start_task(task_id)?;
     super::events::notify();

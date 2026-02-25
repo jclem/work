@@ -22,6 +22,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "0003_task_environment_not_null",
         sql: include_str!("../../migrations/0003_task_environment_not_null.sql"),
     },
+    Migration {
+        version: 4,
+        name: "0004_jobs_queue_metadata",
+        sql: include_str!("../../migrations/0004_jobs_queue_metadata.sql"),
+    },
 ];
 
 pub fn run(conn: &mut Connection) -> Result<(), anyhow::Error> {
