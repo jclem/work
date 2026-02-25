@@ -263,6 +263,12 @@ enum DaemonCommand {
         #[arg(long)]
         force: bool,
     },
+
+    /// Install the daemon as a launchd LaunchAgent
+    Install,
+
+    /// Uninstall the daemon LaunchAgent
+    Uninstall,
 }
 
 #[tokio::main]
@@ -457,6 +463,8 @@ async fn run() -> anyhow::Result<()> {
     match cli.command {
         Some(Command::Daemon { command }) => match command {
             DaemonCommand::Start { force } => daemon::start(force).await?,
+            DaemonCommand::Install => daemon::install()?,
+            DaemonCommand::Uninstall => daemon::uninstall()?,
         },
         Some(Command::Config { command }) => match command {
             ConfigCommand::Edit => {
