@@ -3,272 +3,191 @@
 Date: 2026-02-25
 Scope: CLI -> daemon API -> SQLite staging -> job worker execution, with focus on async provider boundaries, transactional staging, idempotency, and client-visible behavior.
 
-## Files Reviewed
+## Reviewed Surface
+
+- CLI command flow: `src/main.rs`
+- client transport and request semantics: `src/client.rs`
+- daemon routing and request handlers: `src/daemon/mod.rs`, `src/daemon/routes.rs`
+- async worker execution model: `src/daemon/jobs.rs`
+- database lifecycle and persistence primitives: `src/db/mod.rs`
+- state constraints and migrations: `migrations/0001_init.sql`, `migrations/0002_environment_failed_status.sql`, `migrations/0003_task_environment_not_null.sql`
+- provider interfaces and execution model: `src/environment/mod.rs`, `src/environment/script.rs`, `src/environment/git_worktree.rs`
+- current tests: `tests/daemon.rs`, `tests/database.rs`
+
+## Re-Review Findings (Severity Ordered)
+
+### Critical
+
+1. **Job recovery is broken after daemon crash or hard stop**
+- jobs are claimed by changing status `pending -> running`, but there is no lease/heartbeat/requeue mechanism.
+- if daemon exits while jobs are `running`, they are stranded forever and never retried.
+- evidence:
+  - `claim_pending_jobs` only selects `status = 'pending'`: `src/db/mod.rs:411-430`
+  - no startup repair/requeue path in daemon startup: `src/daemon/mod.rs:36-140`
+  - no lease columns in jobs schema: `migrations/0001_init.sql:30-37`
+
+2. **Provider work still runs synchronously in API handlers**
+- request path still performs unbounded provider operations for:
+  - env update (`provider.update`)
+  - env claim (`provider.claim`)
+  - env claim-next (`provider.claim`)
+- this violates the async boundary policy and can stall API calls indefinitely.
+- evidence: `src/daemon/routes.rs:182-253`
+
+3. **Staging writes are not atomic for multi-entity operations**
+- task create flow performs environment row insert, task row insert, and job enqueue across separate DB connections without one transaction.
+- partial writes are possible if later steps fail (for example job enqueue fails after env/task rows exist).
+- same issue exists in env prepare/remove and task remove staging paths.
+- evidence:
+  - task create route: `src/daemon/routes.rs:314-330`
+  - env prepare route: `src/daemon/routes.rs:136-149`
+  - env remove route: `src/daemon/routes.rs:272-286`
+  - task remove route: `src/daemon/routes.rs:379-395`
+  - db helpers open separate connections per call: `src/db/mod.rs:9-13`
+
+4. **`work env create` is racy and frequently incorrect**
+- CLI does `prepare_environment` immediately followed by `claim_environment`.
+- prepare is async and returns `202` with `preparing` state, so immediate claim often fails because env is not yet `pool`.
+- evidence:
+  - CLI flow: `src/main.rs:629-631`
+  - prepare is async queued: `src/daemon/routes.rs:136-156`
+  - claim requires pool state (`db::claim_environment`): `src/db/mod.rs:219-229`
+
+### High
+
+5. **Task-bound environments pass through `pool`, creating steal/race window**
+- task envs are marked `pool` after prepare, then later claimed by `run_task`.
+- unrelated claim endpoints can claim this env before the task runner does.
+- evidence:
+  - `finish_preparing_environment` sets `pool`: `src/db/mod.rs:138-153`
+  - task prepare enqueues run later: `src/daemon/jobs.rs:119-133`
+  - run task claims from pool: `src/daemon/jobs.rs:179`
+  - claim endpoints exist and are callable: `src/daemon/routes.rs:211-270`
+
+6. **`claim_next_environment` leaves environment in `in_use` on provider claim failure**
+- route claims env in DB first, then runs provider.claim.
+- if provider.claim fails, route returns error but env remains `in_use`.
+- evidence:
+  - DB claim first: `src/daemon/routes.rs:248`
+  - provider claim second: `src/daemon/routes.rs:249-252`
+
+7. **Prepare job error handling is inconsistent for task-bound failures**
+- task status is only set to failed for certain prepare error paths.
+- failures before provider result matching (for example missing env/project, join errors) can fail job without task status update.
+- evidence:
+  - limited task failure handling in prepare: `src/daemon/jobs.rs:95-116`
+  - global failure fallback in `process_job` only handles `run_task`: `src/daemon/jobs.rs:47-68`
+
+8. **Task deletion is not staged end-to-end**
+- route enqueues environment removal, then deletes task record immediately.
+- if remove job later fails, environment can be stuck without parent task record for diagnosis/retry context.
+- evidence: `src/daemon/routes.rs:379-395`
+
+9. **Unbounded job fan-out**
+- worker claims all pending jobs then spawns one task per job with no upper bound.
+- bursts can oversubscribe resources and amplify failures.
+- evidence:
+  - claim all pending: `src/db/mod.rs:411-430`
+  - unbounded spawn: `src/daemon/jobs.rs:9-15`
+
+### Medium
+
+10. **Queue model lacks idempotency primitives**
+- no dedupe keys, attempts, backoff timing, lease expiration, or last-error fields.
+- harder to guarantee safe retries and replay.
+- evidence: jobs schema `migrations/0001_init.sql:30-37`, db methods `src/db/mod.rs:388-444`
+
+11. **Foreign key behavior is not explicitly enabled per connection**
+- schema declares references, but connections do not issue `PRAGMA foreign_keys = ON`.
+- integrity enforcement depends on SQLite defaults/environment and is unsafe to assume.
+- evidence: `src/db/mod.rs:9-13`; schema refs in `migrations/0001_init.sql:10-28`
+
+12. **API contract is mixed for provider operations**
+- some provider operations are `202` staged (`prepare`, `remove`), while others are synchronous `200`.
+- inconsistent user expectations and client orchestration complexity.
+- evidence: `src/daemon/routes.rs:136-156`, `182-260`, `272-293`, `314-337`
 
-- `src/main.rs`
-- `src/client.rs`
-- `src/daemon/mod.rs`
-- `src/daemon/routes.rs`
-- `src/daemon/jobs.rs`
-- `src/daemon/events.rs`
-- `src/db/mod.rs`
-- `migrations/0001_init.sql`
-- `migrations/0002_environment_failed_status.sql`
-- `migrations/0003_task_environment_not_null.sql`
+13. **Test coverage does not exercise concurrency/recovery invariants**
+- current tests focus on CRUD/lifecycle happy paths plus one failed-prepare case.
+- no tests for crash recovery of running jobs, job retry semantics, staging atomicity, or env claim race windows.
+- evidence: `tests/daemon.rs`, `tests/database.rs`
 
-## Executive Summary
+## Updated Recommendations
 
-The current design partially matches the intended model:
+### Architectural Rule
 
-- `task new` returns `202` quickly and stages task+env records before provider work.
-- provider work for task execution is in jobs (`prepare_environment`, `run_task`, `remove_environment`).
+- keep request handlers limited to: validate input, perform single DB transaction to stage state, enqueue jobs, return.
+- run all provider/external-process work only in workers.
 
-Major gaps remain relative to the target architecture:
+### State Machine and Queue Changes
 
-1. API staging writes are not atomic in a single DB transaction.
-2. Several provider-touching endpoints are still synchronous in request handling.
-3. Task-bound env lifecycle still uses a `pool -> in_use` transition that permits race/steal behavior.
-4. Job queue semantics are not strongly idempotent (no dedupe keys/leases/attempt policy).
-5. Delete/cancel flows are not fully staged and can leave cross-entity inconsistencies.
+1. Introduce explicit task/env staged states:
+- task: `pending -> env_preparing -> env_ready -> running -> complete|failed|canceled`
+- env (task-bound): `preparing_task -> ready_task -> in_use -> removing -> removed|failed`
+- env (pool): `preparing_pool -> pool -> in_use -> removing -> removed|failed`
 
-## Current Behavior Matrix (Client -> Server)
+2. Replace generic `prepare_environment` for task flow with `prepare_task` job:
+- payload: `{task_id, env_id}`
+- idempotent stage checks before each transition.
+- avoid `pool` state for task-bound envs.
 
-### Project commands
+3. Add robust queue semantics:
+- schema fields: `attempt`, `not_before`, `lease_expires_at`, `dedupe_key`, `last_error`
+- claim with `LIMIT N` and short leases.
+- retries with bounded backoff.
+- startup requeue of expired leases.
 
-- `project new/remove/list`: synchronous SQLite operations.
-- This matches desired boundary (no provider involved).
+### Endpoint and CLI Alignment
 
-### Environment commands
+1. Convert provider-touching routes to async staged operations (`202`):
+- `POST /environments/{id}/update`
+- `POST /environments/{id}/claim`
+- `POST /environments/claim`
 
-- `environment prepare`: async/staged (`202` + `prepare_environment` job).
-- `environment remove`: async/staged (`202` + `remove_environment` job).
-- `environment update`: sync provider execution in route.
-- `environment claim`: sync provider execution in route.
-- `environment claim-next`: sync provider execution in route.
+2. Rework `work env create` UX:
+- either stage a single create-and-claim operation in one queued job, or
+- make it explicit that create returns preparing and claim is separate.
 
-Recommendation: all provider-backed environment operations should enqueue jobs and return `202`.
+3. Rework task remove:
+- stage `cancel_task`/`remove_task` job, keep task record until cleanup reaches terminal state.
 
-### Task commands
+### Transactional DB API
 
-- `task new`: stages env + task records and enqueues `prepare_environment`; returns `202`.
-- `prepare_environment` (when task-bound) enqueues `run_task` after prepare success.
-- `run_task` performs provider claim + provider run + process spawn in worker.
-- `task remove`: queues env removal but also deletes task synchronously in route.
+- add single-call staging helpers that wrap a transaction:
+  - `stage_task_create(project_id, task_provider, env_provider, description)`
+  - `stage_env_prepare(project_id, provider)`
+  - `stage_env_remove(env_id)`
+  - `stage_task_remove(task_id)`
 
-Recommendation: model task removal/cancel as staged async orchestration with task state machine (not immediate hard delete in request path).
+## Prioritized Rollout
 
-## Detailed Findings
+### Phase 1 (Correctness / Risk)
 
-### 1) Transactional staging is incomplete
+1. make provider operations queue-only (`202`) for claim/update endpoints.
+2. add transactional staging helper for task create.
+3. fix task-bound env race by removing interim `pool` exposure.
+4. ensure any prepare failure for task-bound operations marks task terminally failed.
 
-`create_task` route performs 3 separate DB operations without one shared transaction:
+### Phase 2 (Reliability)
 
-1. create env
-2. create task
-3. create job
+1. introduce leases + retry metadata for jobs.
+2. claim `LIMIT N` jobs and enforce worker concurrency caps.
+3. add startup recovery for stale `running` jobs.
 
-A failure in step 3 leaves created task+env with no queued work.
+### Phase 3 (Operational Clarity)
 
-Recommendation:
+1. expand task/env state machine labels.
+2. switch hard task delete to staged cancel/archive.
+3. optionally add operation resources or structured SSE events.
 
-- Add DB-level staged primitives using one transaction per API command, e.g.:
-  - `db::stage_task_creation(...) -> {task, env, job}`
-  - `db::stage_environment_prepare(...)`
-  - `db::stage_task_cancel(...)`
-- Route handlers should call one staging primitive and return.
+## Tests to Add
 
-### 2) Provider execution still blocks request path in multiple routes
-
-The following routes call provider methods inline:
-
-- `update_environment` (`provider.update`)
-- `claim_environment` (`provider.claim`)
-- `claim_next_environment` (`provider.claim`)
-
-These can take arbitrarily long and violate async boundary expectations.
-
-Recommendation:
-
-- Convert to enqueue-only routes with `202` and stage rows first.
-- Add job types:
-  - `update_environment`
-  - `claim_environment`
-  - `claim_next_environment` (or collapse into `claim_environment` with resolver stage)
-
-### 3) Task-bound environment can be claimed by unrelated flows
-
-Current task path:
-
-- task env moves to `pool` after prepare
-- later `run_task` claims it to `in_use`
-
-Between these stages, generic claim endpoints can grab it.
-
-Recommendation:
-
-- Split env statuses into pool-bound vs task-bound:
-  - `preparing_task`, `ready_task`, `in_use`, `failed`
-  - `preparing_pool`, `pool`, `in_use`, `failed`
-- Enforce claim queries only on eligible status classes.
-- For task-bound envs, skip `pool` entirely.
-
-### 4) Job queue lacks robust idempotency model
-
-Current jobs table has `id,type,payload,status` but no:
-
-- dedupe key
-- lease timeout/owner
-- attempt count
-- backoff policy
-
-`claim_pending_jobs` claims all pending jobs each poll, then spawns all concurrently.
-
-Recommendations:
-
-- Add columns:
-  - `dedupe_key TEXT UNIQUE NULL`
-  - `attempt INTEGER NOT NULL DEFAULT 0`
-  - `not_before TEXT NULL`
-  - `lease_expires_at TEXT NULL`
-  - `last_error TEXT NULL`
-- Claim jobs with `LIMIT N` and lease semantics.
-- Retry with bounded attempts and exponential backoff.
-- Ensure all handlers are idempotent by state guards and monotonic transitions.
-
-### 5) Task state machine is too coarse
-
-Current task states: `pending|started|complete|failed`.
-This obscures operational stage and weakens recovery clarity.
-
-Recommendation:
-
-- Expand states, e.g.:
-  - `pending`
-  - `env_preparing`
-  - `env_ready`
-  - `running`
-  - `complete|failed|canceled`
-- Transition only in worker stage handlers.
-- Keep state transitions monotonic and validated in SQL `WHERE` clauses.
-
-### 6) Delete/cancel behavior is not fully staged
-
-`remove_task` currently:
-
-- marks env removing
-- enqueues remove env job
-- deletes task immediately
-
-If provider remove fails, env may remain failed/removing while task record is gone, reducing debuggability.
-
-Recommendation:
-
-- Replace hard delete with cancel/archive workflow:
-  - stage `cancel_task` job (`202`)
-  - worker updates task terminal state and drives env cleanup
-  - optional GC job hard-deletes old terminal tasks later
-
-### 7) API consistency is mixed (sync vs async semantics)
-
-Some mutating endpoints return immediate final state (`200`), others return queued state (`202`).
-
-Recommendation:
-
-- Define policy:
-  - provider-free mutations: `200/201/204`
-  - provider-involved mutations: `202` + staged entity snapshot
-- Add operation resource (optional): `/operations/{id}` to track queued operation status.
-
-### 8) SSE update model is coarse
-
-SSE only emits generic `update`, forcing full client polling.
-
-Recommendation:
-
-- Keep generic mode for now, but consider structured events:
-  - `task.updated`, `environment.updated`, `job.updated`
-- Allow clients to reduce full-list polling in high-load setups.
-
-## Recommended Target Architecture
-
-### Core principle
-
-- Request handlers perform only validation + transactional staging.
-- Workers perform all provider and long-running work.
-
-### Suggested staged workflows
-
-#### `POST /tasks` (`task new`)
-
-In one transaction:
-
-1. create env row in task-bound pending state
-2. create task row in `pending`/`env_preparing`
-3. enqueue `prepare_task` job with `{task_id, env_id}` and dedupe key
-4. return `202` with task+env ids
-
-Worker `prepare_task` (idempotent):
-
-1. no-op if terminal
-2. provider.prepare
-3. mark env ready/in-use according to policy
-4. enqueue `run_task` (or continue inline in same job if preferred)
-5. on error: mark env/task failed
-
-#### `POST /environments/{id}/claim`
-
-In one transaction:
-
-1. validate env is pool-claimable
-2. enqueue `claim_environment`
-3. return `202`
-
-Worker claims with state guard and provider.claim.
-
-#### `DELETE /tasks/{id}`
-
-In one transaction:
-
-1. mark task as `cancel_requested`
-2. enqueue `cancel_task`
-3. return `202`
-
-Worker resolves process cancellation/cleanup and env removal idempotently.
-
-## Prioritized Implementation Plan
-
-### Phase 1 (safety + consistency)
-
-1. Add transactional staging helpers in `db` for task/env/job triple writes.
-2. Convert provider-touching routes (`claim/update/claim-next`) to enqueue-only `202`.
-3. Introduce task-bound env statuses to eliminate pool-steal race.
-
-### Phase 2 (idempotent queue semantics)
-
-1. Add queue metadata (attempt, not_before, lease, dedupe_key).
-2. Change job claim loop to `LIMIT N` + lease ownership.
-3. Add retry/backoff and max-attempt terminal failure policy.
-
-### Phase 3 (lifecycle/observability)
-
-1. Expand task/env state machines.
-2. Replace hard delete with cancel/archive + deferred GC.
-3. Add structured SSE events or operation status resources.
-
-## Client/CLI Recommendations
-
-- Keep CLI blocking only for user-intent convenience flags (`--attach` logs), not for backend mutation completion.
-- Default mutating commands that involve provider to print staged IDs/status and return immediately.
-- For human output, clearly show `queued`, `preparing`, `running`, `failed` transitions.
-
-## Test Coverage Gaps to Add
-
-1. Transactional atomicity tests for all staged route writes.
-2. Concurrency/race tests for task-bound env vs pool claims.
-3. Idempotent reprocessing tests for each job type.
-4. Crash-recovery tests between each stage boundary.
-5. End-to-end tests for cancel/remove semantics with provider failures.
+1. transactional atomicity tests for all multi-write staging endpoints.
+2. crash recovery test: daemon killed during running job, job is reclaimed/retried.
+3. race test: task-bound env cannot be claimed by pool claim endpoints.
+4. idempotency tests: duplicate job delivery does not corrupt state.
+5. CLI behavior test: `env create` semantics match documented async behavior.
 
 ## Conclusion
 
-The codebase is close to the desired direction for `task new`, but still mixed in execution model. The highest-value next step is to finish the async boundary rule consistently: provider involvement should happen only in worker jobs, and request-side staging should be done in a single DB transaction.
+The system is moving in the right direction for `task new`, but it is still mixed between synchronous provider execution and asynchronous staged execution. The highest-value fixes are: transactional staging at API boundaries, queue-only provider work, and reliable job recovery semantics.
