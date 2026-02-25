@@ -90,6 +90,10 @@ pub fn task_log_path(task_id: &str) -> Result<PathBuf, anyhow::Error> {
     Ok(task_log_dir()?.join(format!("{task_id}.log")))
 }
 
+pub fn tui_log_path() -> Result<PathBuf, anyhow::Error> {
+    Ok(state_dir()?.join("tui.log"))
+}
+
 pub fn ensure_dirs() -> Result<(), anyhow::Error> {
     let data = data_dir()?;
     tracing::debug!(path = %data.display(), "ensuring data directory");

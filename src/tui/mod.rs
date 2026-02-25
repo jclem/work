@@ -64,6 +64,9 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
         tokio::select! {
             _ = tick_interval.tick() => {
                 tick_count = tick_count.wrapping_add(1);
+                if app.tab == Tab::Logs {
+                    app.refresh_tui_logs();
+                }
             }
             result = events_rx.recv() => {
                 match result {
@@ -168,6 +171,10 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             app.select_tab(3);
             return;
         }
+        KeyCode::Char('5') => {
+            app.select_tab(4);
+            return;
+        }
         _ => {}
     }
 
@@ -197,5 +204,14 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             _ => {}
         },
         Tab::Daemon => {}
+        Tab::Logs => match key.code {
+            KeyCode::Char('j') | KeyCode::Down => app.scroll_tui_log_down(1),
+            KeyCode::Char('k') | KeyCode::Up => app.scroll_tui_log_up(1),
+            KeyCode::Char('g') => app.scroll_tui_log_top(),
+            KeyCode::Char('G') => app.scroll_tui_log_bottom(),
+            KeyCode::Char('d') => app.scroll_tui_log_down(20),
+            KeyCode::Char('u') => app.scroll_tui_log_up(20),
+            _ => {}
+        },
     }
 }
