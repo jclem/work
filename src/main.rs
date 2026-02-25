@@ -578,15 +578,15 @@ async fn run() -> anyhow::Result<()> {
                         provider,
                         format,
                     } => {
-                        let provider = provider
-                            .or(config.default_environment_provider.clone())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "--provider is required (or set default-environment-provider in config)"
-                                )
-                            })?;
                         let projects = client.list_projects().await?;
                         let proj = resolve_project(&projects, project)?;
+                        let provider = provider
+                            .or(config.default_environment_provider_for_project(&proj.name))
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "--provider is required (or set environment-provider in config)"
+                                )
+                            })?;
                         let env = client.prepare_environment(&proj.id, &provider).await?;
                         let env = client.claim_environment(&env.id).await?;
                         print_env(&env, &format)?;
@@ -596,15 +596,15 @@ async fn run() -> anyhow::Result<()> {
                         provider,
                         format,
                     } => {
-                        let provider = provider
-                            .or(config.default_environment_provider.clone())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "--provider is required (or set default-environment-provider in config)"
-                                )
-                            })?;
                         let projects = client.list_projects().await?;
                         let proj = resolve_project(&projects, project)?;
+                        let provider = provider
+                            .or(config.default_environment_provider_for_project(&proj.name))
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "--provider is required (or set environment-provider in config)"
+                                )
+                            })?;
                         let env = client.prepare_environment(&proj.id, &provider).await?;
                         print_env(&env, &format)?;
                     }
@@ -621,13 +621,6 @@ async fn run() -> anyhow::Result<()> {
                         let env = if let Some(id) = id {
                             client.claim_environment(&id).await?
                         } else {
-                            let provider = provider
-                                .or(config.default_environment_provider.clone())
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "--provider is required when no id is given (or set default-environment-provider in config)"
-                                    )
-                                })?;
                             let project_name = project.ok_or_else(|| {
                                 anyhow::anyhow!("--project is required when no id is given")
                             })?;
@@ -637,6 +630,13 @@ async fn run() -> anyhow::Result<()> {
                                 .find(|p| p.name == project_name)
                                 .ok_or_else(|| {
                                     anyhow::anyhow!("project not found: {project_name}")
+                                })?;
+                            let provider = provider
+                                .or(config.default_environment_provider_for_project(&proj.name))
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "--provider is required when no id is given (or set environment-provider in config)"
+                                    )
                                 })?;
                             client.claim_next_environment(&provider, &proj.id).await?
                         };
@@ -694,25 +694,24 @@ async fn run() -> anyhow::Result<()> {
                         attach,
                         format,
                     } => {
+                        let projects = client.list_projects().await?;
+                        let proj = resolve_project(&projects, project)?;
                         let task_provider_name = provider
-                            .or(config.default_task_provider.clone())
+                            .or(config.default_task_provider_for_project(&proj.name))
                             .ok_or_else(|| {
                                 anyhow::anyhow!(
-                                    "--provider is required (or set default-task-provider in config)"
+                                    "--provider is required (or set task-provider in config)"
                                 )
                             })?;
                         let env_provider = env_provider
-                            .or(config.default_environment_provider.clone())
+                            .or(config.default_environment_provider_for_project(&proj.name))
                             .ok_or_else(|| {
                                 anyhow::anyhow!(
-                                    "--env-provider is required (or set default-environment-provider in config)"
+                                    "--env-provider is required (or set environment-provider in config)"
                                 )
                             })?;
 
                         config.get_task_provider(&task_provider_name)?;
-
-                        let projects = client.list_projects().await?;
-                        let proj = resolve_project(&projects, project)?;
 
                         let task = client
                             .create_task(&proj.id, &task_provider_name, &env_provider, &description)

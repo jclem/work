@@ -56,8 +56,12 @@ editor with:
 
 <pre><code># Default providers used when --provider / --env-provider
 # are not specified on the command line.
-default-task-provider = "claude"
-default-environment-provider = "git-worktree"
+task-provider = "claude"
+environment-provider = "git-worktree"
+
+[projects.backend]
+task-provider = "codex"
+environment-provider = "sandbox"
 
 [daemon]
 debug = false
@@ -98,14 +102,41 @@ command = "/usr/local/bin/sandbox-provider.sh"</code></pre>
   </thead>
   <tbody>
     <tr>
-      <td><code>default-task-provider</code></td>
+      <td><code>task-provider</code></td>
       <td>string</td>
       <td>Name of the task provider to use when <code>--provider</code> is omitted.</td>
     </tr>
     <tr>
-      <td><code>default-environment-provider</code></td>
+      <td><code>environment-provider</code></td>
       <td>string</td>
       <td>Name of the environment provider to use when <code>--provider</code> / <code>--env-provider</code> is omitted.</td>
+    </tr>
+    <tr>
+      <td><code>[projects.&lt;name&gt;]</code></td>
+      <td>table</td>
+      <td>Optional project-specific defaults that override top-level provider defaults.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>[projects.&lt;name&gt;]</h3>
+
+<p>Per-project default provider overrides, keyed by registered project name.</p>
+
+<table>
+  <thead>
+    <tr><th>Key</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>task-provider</code></td>
+      <td>string</td>
+      <td>Task provider to use for this project when <code>--provider</code> is omitted.</td>
+    </tr>
+    <tr>
+      <td><code>environment-provider</code></td>
+      <td>string</td>
+      <td>Environment provider to use for this project when <code>--provider</code> / <code>--env-provider</code> is omitted.</td>
     </tr>
   </tbody>
 </table>
