@@ -2,6 +2,7 @@ mod app;
 mod ui;
 
 use std::io;
+use std::sync::{Arc, Condvar, Mutex};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -16,6 +17,110 @@ use app::{App, Tab};
 enum EditorOutcome {
     Submitted(String),
     Cancelled(String),
+}
+
+#[derive(Clone)]
+struct InputGate {
+    state: Arc<(Mutex<InputGateState>, Condvar)>,
+}
+
+struct InputGateState {
+    paused: bool,
+    parked: bool,
+    stopped: bool,
+}
+
+struct InputPauseGuard<'a> {
+    gate: &'a InputGate,
+}
+
+impl Drop for InputPauseGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.resume();
+    }
+}
+
+impl InputGate {
+    fn new() -> Self {
+        Self {
+            state: Arc::new((
+                Mutex::new(InputGateState {
+                    paused: false,
+                    parked: false,
+                    stopped: false,
+                }),
+                Condvar::new(),
+            )),
+        }
+    }
+
+    fn pause_guard(&self) -> InputPauseGuard<'_> {
+        self.pause();
+        InputPauseGuard { gate: self }
+    }
+
+    fn pause(&self) {
+        let (lock, cvar) = &*self.state;
+        let mut state = lock.lock().expect("input gate lock poisoned");
+        state.paused = true;
+        while !state.parked && !state.stopped {
+            state = cvar.wait(state).expect("input gate lock poisoned");
+        }
+    }
+
+    fn resume(&self) {
+        let (lock, cvar) = &*self.state;
+        let mut state = lock.lock().expect("input gate lock poisoned");
+        state.paused = false;
+        cvar.notify_all();
+        while state.parked && !state.stopped {
+            state = cvar.wait(state).expect("input gate lock poisoned");
+        }
+    }
+
+    fn stop(&self) {
+        let (lock, cvar) = &*self.state;
+        let mut state = lock.lock().expect("input gate lock poisoned");
+        state.stopped = true;
+        state.paused = false;
+        cvar.notify_all();
+    }
+
+    fn wait_if_paused_or_stopped(&self) -> bool {
+        let (lock, cvar) = &*self.state;
+        let mut state = lock.lock().expect("input gate lock poisoned");
+
+        loop {
+            if state.stopped {
+                if state.parked {
+                    state.parked = false;
+                    cvar.notify_all();
+                }
+                return true;
+            }
+
+            if state.paused {
+                if !state.parked {
+                    state.parked = true;
+                    cvar.notify_all();
+                }
+                state = cvar.wait(state).expect("input gate lock poisoned");
+                continue;
+            }
+
+            if state.parked {
+                state.parked = false;
+                cvar.notify_all();
+            }
+            return false;
+        }
+    }
+
+    fn is_paused_or_stopped(&self) -> bool {
+        let (lock, _) = &*self.state;
+        let state = lock.lock().expect("input gate lock poisoned");
+        state.paused || state.stopped
+    }
 }
 
 pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
@@ -40,18 +145,29 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
     // Spawn a blocking task to read key events into a channel.
     // Use poll() with a timeout so the thread can notice when the
     // receiver is dropped and exit without waiting for a keypress.
-    let (key_tx, mut key_rx) = tokio::sync::mpsc::channel(32);
+    let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
+    let input_gate = InputGate::new();
+    let input_gate_reader = input_gate.clone();
     let input_handle = tokio::task::spawn_blocking(move || {
         loop {
+            if input_gate_reader.wait_if_paused_or_stopped() {
+                break;
+            }
+
             if !event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
                 if key_tx.is_closed() {
                     break;
                 }
                 continue;
             }
+
+            if input_gate_reader.is_paused_or_stopped() {
+                continue;
+            }
+
             match event::read() {
                 Ok(Event::Key(key)) => {
-                    if key_tx.blocking_send(key).is_err() {
+                    if key_tx.send(key).is_err() {
                         break;
                     }
                 }
@@ -98,7 +214,7 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-                    let needs_full_redraw = handle_key(&mut app, &client, key).await;
+                    let needs_full_redraw = handle_key(&mut app, &client, key, &input_gate).await;
                     if needs_full_redraw {
                         terminal.clear()?;
                     }
@@ -112,6 +228,7 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
         }
     }
 
+    input_gate.stop();
     // Drop the receiver so the input thread detects the closed channel and exits.
     drop(key_rx);
     // Restore terminal.
@@ -123,7 +240,12 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) -> bool {
+async fn handle_key(
+    app: &mut App,
+    client: &DaemonClient,
+    key: event::KeyEvent,
+    input_gate: &InputGate,
+) -> bool {
     // Confirm dialog takes priority.
     if app.confirm.is_some() {
         match key.code {
@@ -139,7 +261,7 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
             KeyCode::Char('j') | KeyCode::Down => app.create_task_prompt_select_next(),
             KeyCode::Char('k') | KeyCode::Up => app.create_task_prompt_select_prev(),
             KeyCode::Enter => {
-                confirm_create_task_prompt(app, client).await;
+                confirm_create_task_prompt(app, client, input_gate).await;
                 return true;
             }
             KeyCode::Char('q') | KeyCode::Esc => app.cancel_create_task_prompt(),
@@ -250,7 +372,7 @@ async fn handle_key(app: &mut App, client: &DaemonClient, key: event::KeyEvent) 
     false
 }
 
-async fn confirm_create_task_prompt(app: &mut App, client: &DaemonClient) {
+async fn confirm_create_task_prompt(app: &mut App, client: &DaemonClient, input_gate: &InputGate) {
     let Some(project) = app.create_task_prompt_selected_project().cloned() else {
         app.cancel_create_task_prompt();
         app.error = Some("selected project is no longer available".to_string());
@@ -258,7 +380,7 @@ async fn confirm_create_task_prompt(app: &mut App, client: &DaemonClient) {
     };
     app.cancel_create_task_prompt();
 
-    let description = match edit_task_description() {
+    let description = match edit_task_description(input_gate) {
         Ok(EditorOutcome::Submitted(description)) => description,
         Ok(EditorOutcome::Cancelled(reason)) => {
             app.error = Some(reason);
@@ -316,7 +438,9 @@ async fn create_task_for_project(
     }
 }
 
-fn edit_task_description() -> anyhow::Result<EditorOutcome> {
+fn edit_task_description(input_gate: &InputGate) -> anyhow::Result<EditorOutcome> {
+    let _input_pause = input_gate.pause_guard();
+
     let editor = std::env::var("EDITOR").map_err(|_| anyhow::anyhow!("$EDITOR is not set"))?;
     let path = std::env::temp_dir().join(format!("work-task-{}.txt", crate::id::new_id()));
     std::fs::write(&path, "")?;
