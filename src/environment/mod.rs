@@ -1,3 +1,4 @@
+mod apfs_worktree;
 mod git_worktree;
 mod script;
 
@@ -57,7 +58,7 @@ pub trait EnvironmentProvider {
 }
 
 pub fn list_providers() -> Vec<String> {
-    let mut providers = vec!["git-worktree".to_string()];
+    let mut providers = vec!["git-worktree".to_string(), "apfs-worktree".to_string()];
 
     if let Ok(config) = crate::config::load()
         && let Some(envs) = &config.environments
@@ -71,6 +72,7 @@ pub fn list_providers() -> Vec<String> {
 pub fn get_provider(name: &str) -> anyhow::Result<Box<dyn EnvironmentProvider>> {
     match name {
         "git-worktree" => Ok(Box::new(git_worktree::GitWorktreeProvider)),
+        "apfs-worktree" => Ok(Box::new(apfs_worktree::ApfsWorktreeProvider)),
         _ => {
             let config = crate::config::load()?;
             let env_config = config.get_environment_provider(name)?;
@@ -82,5 +84,17 @@ pub fn get_provider(name: &str) -> anyhow::Result<Box<dyn EnvironmentProvider>> 
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::list_providers;
+
+    #[test]
+    fn built_in_providers_are_listed() {
+        let providers = list_providers();
+        assert!(providers.contains(&"git-worktree".to_string()));
+        assert!(providers.contains(&"apfs-worktree".to_string()));
     }
 }

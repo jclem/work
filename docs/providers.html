@@ -45,10 +45,16 @@
 <h1>Custom providers</h1>
 
 <p>
-The built-in <code>git-worktree</code> environment provider creates git
-worktrees for isolation. When you need something different&mdash;containers,
-VMs, remote machines, sandboxes&mdash;you can write a custom environment
-provider as a script.
+Built-in environment providers:
+</p>
+<ul>
+  <li><code>git-worktree</code>: creates git worktrees under the <code>work</code> data directory.</li>
+  <li><code>apfs-worktree</code>: creates worktrees under the <code>work</code> data directory,
+    clones top-level project entries via APFS <code>cp -cR</code>, then resets to the environment branch.</li>
+</ul>
+<p>
+When you need something different&mdash;containers, VMs, remote machines,
+sandboxes&mdash;you can write a custom environment provider as a script.
 </p>
 
 <h2>Registering a provider</h2>

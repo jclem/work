@@ -85,7 +85,11 @@ args = ["-p", "{task_description}"]
 
 ### Environment providers
 
-The built-in `git-worktree` provider creates a git worktree per environment.
+Built-in options:
+- `git-worktree`: creates a git worktree per environment under the `work` data directory.
+- `apfs-worktree`: creates worktrees under the `work` data directory, clones
+  top-level project entries with APFS `cp -cR`, then resets to the environment branch.
+
 For custom isolation, write a script provider — see
 [Custom environment providers](#custom-environment-providers).
 
