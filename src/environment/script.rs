@@ -8,7 +8,7 @@ use crate::db::Project;
 use super::{EnvironmentProvider, ProviderExecCommand, RunSpec};
 
 pub struct ScriptProvider {
-    pub command: String,
+    pub path: String,
 }
 
 impl ScriptProvider {
@@ -21,7 +21,7 @@ impl ScriptProvider {
     ) -> anyhow::Result<serde_json::Value> {
         let input_bytes = serde_json::to_vec(input)?;
 
-        let mut command = Command::new(&self.command);
+        let mut command = Command::new(&self.path);
         command
             .arg(action)
             .stdin(Stdio::piped())
@@ -55,7 +55,7 @@ impl ScriptProvider {
         if !output.status.success() {
             anyhow::bail!(
                 "{} {} failed with status {}",
-                self.command,
+                self.path,
                 action,
                 output.status
             );
@@ -151,7 +151,7 @@ impl EnvironmentProvider for ScriptProvider {
         let input = json!({ "metadata": metadata });
         let input_bytes = serde_json::to_vec(&input)?;
 
-        let mut command = Command::new(&self.command);
+        let mut command = Command::new(&self.path);
         command.arg("remove").stdin(Stdio::piped());
         if let Some(path) = log_path {
             if let Some(parent) = path.parent() {
@@ -180,7 +180,7 @@ impl EnvironmentProvider for ScriptProvider {
 
         let status = child.wait()?;
         if !status.success() {
-            anyhow::bail!("{} remove failed with status {}", self.command, status);
+            anyhow::bail!("{} remove failed with status {}", self.path, status);
         }
 
         Ok(())
@@ -199,7 +199,7 @@ impl EnvironmentProvider for ScriptProvider {
         });
 
         Ok(RunSpec {
-            program: self.command.clone(),
+            program: self.path.clone(),
             args: vec!["run".to_string()],
             cwd: None,
             stdin_data: Some(serde_json::to_vec(&input)?),
@@ -227,7 +227,7 @@ impl EnvironmentProvider for ScriptProvider {
         run_args.extend(args.iter().cloned());
 
         Ok(RunSpec {
-            program: self.command.clone(),
+            program: self.path.clone(),
             args: run_args,
             cwd: None,
             stdin_data: None,
