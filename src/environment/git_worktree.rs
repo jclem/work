@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::db::Project;
 
-use super::{EnvironmentProvider, RunSpec};
+use super::{EnvironmentProvider, ProviderExecCommand, RunSpec};
 
 pub struct GitWorktreeProvider;
 
@@ -113,6 +113,17 @@ impl EnvironmentProvider for GitWorktreeProvider {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing worktree_path in metadata"))?;
 
+        if command == "cd" {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+            return Ok(RunSpec {
+                program: shell,
+                args: Vec::new(),
+                cwd: Some(PathBuf::from(worktree_path)),
+                stdin_data: None,
+                env: Vec::new(),
+            });
+        }
+
         Ok(RunSpec {
             program: command.to_string(),
             args: args.to_vec(),
@@ -120,6 +131,16 @@ impl EnvironmentProvider for GitWorktreeProvider {
             stdin_data: None,
             env: Vec::new(),
         })
+    }
+
+    fn exec_commands(
+        &self,
+        _metadata: &serde_json::Value,
+    ) -> anyhow::Result<Vec<ProviderExecCommand>> {
+        Ok(vec![ProviderExecCommand {
+            name: "cd".to_string(),
+            help: Some("Open a shell in the worktree directory".to_string()),
+        }])
     }
 
     fn remove(
@@ -162,5 +183,47 @@ impl EnvironmentProvider for GitWorktreeProvider {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exec_commands_include_cd() {
+        let provider = GitWorktreeProvider;
+        let commands = provider.exec_commands(&json!({})).unwrap();
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "cd");
+    }
+
+    #[test]
+    fn exec_cd_runs_shell_in_worktree() {
+        let provider = GitWorktreeProvider;
+        let metadata = json!({ "worktree_path": "/tmp/worktree" });
+
+        let run_spec = provider.exec(&metadata, "cd", &[]).unwrap();
+
+        assert_eq!(
+            run_spec.program,
+            std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
+        );
+        assert_eq!(run_spec.args, Vec::<String>::new());
+        assert_eq!(run_spec.cwd, Some(PathBuf::from("/tmp/worktree")));
+    }
+
+    #[test]
+    fn exec_non_cd_passthrough() {
+        let provider = GitWorktreeProvider;
+        let metadata = json!({ "worktree_path": "/tmp/worktree" });
+        let args = vec!["-la".to_string()];
+
+        let run_spec = provider.exec(&metadata, "ls", &args).unwrap();
+
+        assert_eq!(run_spec.program, "ls");
+        assert_eq!(run_spec.args, args);
+        assert_eq!(run_spec.cwd, Some(PathBuf::from("/tmp/worktree")));
     }
 }
