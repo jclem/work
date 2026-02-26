@@ -206,5 +206,4 @@ path = "/tmp/sandbox-provider.sh"
             if path == "/tmp/sandbox-provider.sh"
         ));
     }
-
 }

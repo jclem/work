@@ -76,9 +76,7 @@ pub fn get_provider(name: &str) -> anyhow::Result<Box<dyn EnvironmentProvider>> 
             let env_config = config.get_environment_provider(name)?;
             match env_config {
                 crate::config::EnvironmentProviderConfig::Script { path } => {
-                    Ok(Box::new(script::ScriptProvider {
-                        path: path.clone(),
-                    }))
+                    Ok(Box::new(script::ScriptProvider { path: path.clone() }))
                 }
             }
         }
