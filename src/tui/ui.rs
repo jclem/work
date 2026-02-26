@@ -520,14 +520,12 @@ fn draw_create_task_prompt(frame: &mut Frame, app: &App) {
 
 fn draw_confirm_dialog(frame: &mut Frame, app: &App) {
     let (target_label, target_value, skip_provider) = match app.confirm {
-        Some(Confirm::DeleteTask {
+        Some(Confirm::Task {
             ref task_id,
             skip_provider,
         }) => ("Task", short_id(task_id).to_string(), skip_provider),
-        Some(Confirm::DeleteProject { ref project_name }) => {
-            ("Project", project_name.clone(), false)
-        }
-        Some(Confirm::DeleteEnvironment {
+        Some(Confirm::Project { ref project_name }) => ("Project", project_name.clone(), false),
+        Some(Confirm::Environment {
             ref env_id,
             skip_provider,
         }) => ("Environment", short_id(env_id).to_string(), skip_provider),

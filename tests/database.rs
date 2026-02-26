@@ -1509,7 +1509,7 @@ command = "{}"
 }
 
 #[test]
-fn task_exec_alias_runs_provider_exec_action_and_completes_provider_commands() {
+fn task_top_level_aliases_run_task_commands_and_complete_exec_commands() {
     let d = DaemonFixture::start();
 
     let provider_script = d.work_dir.path().join("execable-task-env-provider.sh");
@@ -1576,7 +1576,6 @@ command = "{}"
     let task_out = d
         .assert_cmd()
         .args([
-            "task",
             "new",
             "task exec flow",
             "--project",
@@ -1598,6 +1597,24 @@ command = "{}"
 
     let _ = wait_for_task_terminal_status(&d, &task_id, Duration::from_secs(8));
 
+    let task_list_out = d
+        .assert_cmd()
+        .args(["list", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let tasks: Vec<serde_json::Value> = serde_json::from_slice(&task_list_out).unwrap();
+    assert!(
+        tasks
+            .iter()
+            .any(|candidate| candidate["id"].as_str() == Some(task_id.as_str())),
+        "expected top-level list to include task {task_id}"
+    );
+
+    d.assert_cmd().args(["logs", &task_id]).assert().success();
+
     let completion_out = d
         .assert_cmd()
         .env("COMPLETE", "bash")
@@ -1614,10 +1631,51 @@ command = "{}"
         "expected task exec completion to include ssh, got: {completion_text:?}"
     );
 
+    let top_level_completion_out = d
+        .assert_cmd()
+        .env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", "3")
+        .args(["--", "work", "exec", &task_id, "s"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let top_level_completion_text = String::from_utf8(top_level_completion_out).unwrap();
+    assert!(
+        top_level_completion_text.lines().any(|line| line == "ssh"),
+        "expected top-level exec completion to include ssh, got: {top_level_completion_text:?}"
+    );
+
     d.assert_cmd()
-        .args(["task", "x", &task_id, "ssh"])
+        .args(["exec", &task_id, "ssh"])
         .assert()
         .success()
         .stdout(predicate::str::contains("exec-action command=ssh"))
         .stdout(predicate::str::contains("\"sandbox_id\":\"sbx-task\""));
+
+    d.assert_cmd().args(["remove", &task_id]).assert().success();
+
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        let tasks_out = d
+            .assert_cmd()
+            .args(["list", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&tasks_out).unwrap();
+        if tasks
+            .iter()
+            .all(|candidate| candidate["id"].as_str() != Some(task_id.as_str()))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("task was not deleted by top-level remove alias");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }

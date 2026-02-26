@@ -63,6 +63,79 @@ enum Command {
         command: TaskCommand,
     },
 
+    /// Alias for `task new`
+    New {
+        /// Task description
+        description: String,
+
+        /// Project name (defaults to project matching current directory)
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Task provider (uses config default if not specified)
+        #[arg(long, add = ArgValueCompleter::new(complete_task_providers))]
+        provider: Option<String>,
+
+        /// Environment provider (uses config default if not specified)
+        #[arg(long, add = ArgValueCompleter::new(complete_env_providers))]
+        env_provider: Option<String>,
+
+        /// Follow task logs after creation
+        #[arg(short, long)]
+        attach: bool,
+
+        /// Output format
+        #[arg(long, default_value = "human")]
+        format: OutputFormat,
+    },
+
+    /// Alias for `task remove`
+    #[command(alias = "rm")]
+    Remove {
+        /// Task ID
+        #[arg(add = ArgValueCompleter::new(complete_task_ids))]
+        id: String,
+
+        /// Skip provider cleanup and remove only database records
+        #[arg(long)]
+        skip_provider: bool,
+    },
+
+    /// Alias for `task list`
+    #[command(alias = "ls")]
+    List {
+        /// Output format
+        #[arg(long, default_value = "human")]
+        format: OutputFormat,
+    },
+
+    /// Alias for `task logs`
+    Logs {
+        /// Task ID
+        #[arg(add = ArgValueCompleter::new(complete_task_ids))]
+        id: String,
+
+        /// Follow log output in realtime
+        #[arg(short = 'f', long = "follow")]
+        follow: bool,
+    },
+
+    /// Alias for `task exec`
+    #[command(alias = "x")]
+    Exec {
+        /// Task ID
+        #[arg(add = ArgValueCompleter::new(complete_task_ids))]
+        id: String,
+
+        /// Provider command name
+        #[arg(add = ArgValueCompleter::new(complete_task_exec_commands))]
+        command: String,
+
+        /// Arguments passed to the provider command
+        #[arg(allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
+
     /// Manage environments
     #[command(alias = "env")]
     Environment {
@@ -478,21 +551,40 @@ fn completion_words() -> Vec<String> {
 fn completion_exec_target_id(kind: &str) -> Option<String> {
     let words = completion_words();
     for index in 0..words.len() {
-        let scope_matches = match kind {
-            "env" => words[index] == "env" || words[index] == "environment",
-            "task" => words[index] == "task",
-            _ => false,
-        };
-        if !scope_matches {
-            continue;
-        }
+        match kind {
+            "env" => {
+                if words[index] != "env" && words[index] != "environment" {
+                    continue;
+                }
 
-        let action = words.get(index + 1)?;
-        if action != "exec" && action != "x" {
-            continue;
-        }
+                let Some(action) = words.get(index + 1) else {
+                    continue;
+                };
+                if action != "exec" && action != "x" {
+                    continue;
+                }
 
-        return words.get(index + 2).cloned();
+                return words.get(index + 2).cloned();
+            }
+            "task" => {
+                if words[index] == "task" {
+                    let Some(action) = words.get(index + 1) else {
+                        continue;
+                    };
+                    if action != "exec" && action != "x" {
+                        continue;
+                    }
+
+                    return words.get(index + 2).cloned();
+                }
+
+                // Support top-level aliases: `work exec ...` and `work x ...`.
+                if words[index] == "exec" || words[index] == "x" {
+                    return words.get(index + 1).cloned();
+                }
+            }
+            _ => {}
+        }
     }
 
     None
@@ -686,10 +778,10 @@ fn execute_run_spec(run_spec: environment::RunSpec) -> anyhow::Result<()> {
 
     let mut child = command.spawn()?;
 
-    if let Some(data) = run_spec.stdin_data {
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(&data)?;
-        }
+    if let Some(data) = run_spec.stdin_data
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        stdin.write_all(&data)?;
     }
 
     let status = child.wait()?;
@@ -730,6 +822,98 @@ async fn exec_task_command(
         provider_args,
     )
     .await
+}
+
+async fn handle_task_command(
+    client: &client::DaemonClient,
+    config: &config::Config,
+    command: TaskCommand,
+) -> anyhow::Result<()> {
+    match command {
+        TaskCommand::New {
+            description,
+            project,
+            provider,
+            env_provider,
+            attach,
+            format,
+        } => {
+            let projects = client.list_projects().await?;
+            let proj = resolve_project(&projects, project)?;
+            let task_provider_name = provider
+                .or(config.default_task_provider_for_project(&proj.name))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("--provider is required (or set task-provider in config)")
+                })?;
+            let env_provider = env_provider
+                .or(config.default_environment_provider_for_project(&proj.name))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--env-provider is required (or set environment-provider in config)"
+                    )
+                })?;
+
+            config.get_task_provider(&task_provider_name)?;
+
+            let task = client
+                .create_task(&proj.id, &task_provider_name, &env_provider, &description)
+                .await?;
+
+            print_task(&task, &format)?;
+
+            if attach {
+                follow_task_logs(client, &task.id).await?;
+            }
+        }
+        TaskCommand::Remove { id, skip_provider } => {
+            client.remove_task(&id, skip_provider).await?;
+        }
+        TaskCommand::List { format } => {
+            let tasks = client.list_tasks().await?;
+            match format {
+                OutputFormat::Human => {
+                    if tasks.is_empty() {
+                        return Ok(());
+                    }
+                    println!(
+                        "{:<22}  {:<12}  {:<10}  DESCRIPTION",
+                        "ID", "PROVIDER", "STATUS"
+                    );
+                    for t in &tasks {
+                        println!(
+                            "{:<22}  {:<12}  {:<10}  {}",
+                            t.id, t.provider, t.status, t.description
+                        );
+                    }
+                }
+                OutputFormat::Plain => {
+                    for t in &tasks {
+                        println!("{}\t{}\t{}\t{}", t.id, t.provider, t.status, t.description);
+                    }
+                }
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string(&tasks)?);
+                }
+            }
+        }
+        TaskCommand::Logs { id, follow } => {
+            if follow {
+                follow_task_logs(client, &id).await?;
+            } else {
+                let log_path = paths::task_log_path(&id)?;
+                if !log_path.exists() {
+                    anyhow::bail!("no logs found for task {id}");
+                }
+                let contents = std::fs::read_to_string(&log_path)?;
+                print!("{contents}");
+            }
+        }
+        TaskCommand::Exec { id, command, args } => {
+            exec_task_command(client, &id, &command, &args).await?;
+        }
+    }
+
+    Ok(())
 }
 
 async fn run() -> anyhow::Result<()> {
@@ -989,94 +1173,47 @@ async fn run() -> anyhow::Result<()> {
                         }
                     },
                 },
-                Command::Task { command } => match command {
-                    TaskCommand::New {
-                        description,
-                        project,
-                        provider,
-                        env_provider,
-                        attach,
-                        format,
-                    } => {
-                        let projects = client.list_projects().await?;
-                        let proj = resolve_project(&projects, project)?;
-                        let task_provider_name = provider
-                            .or(config.default_task_provider_for_project(&proj.name))
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "--provider is required (or set task-provider in config)"
-                                )
-                            })?;
-                        let env_provider = env_provider
-                            .or(config.default_environment_provider_for_project(&proj.name))
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "--env-provider is required (or set environment-provider in config)"
-                                )
-                            })?;
-
-                        config.get_task_provider(&task_provider_name)?;
-
-                        let task = client
-                            .create_task(&proj.id, &task_provider_name, &env_provider, &description)
-                            .await?;
-
-                        print_task(&task, &format)?;
-
-                        if attach {
-                            follow_task_logs(&client, &task.id).await?;
-                        }
-                    }
-                    TaskCommand::Remove { id, skip_provider } => {
-                        client.remove_task(&id, skip_provider).await?;
-                    }
-                    TaskCommand::List { format } => {
-                        let tasks = client.list_tasks().await?;
-                        match format {
-                            OutputFormat::Human => {
-                                if tasks.is_empty() {
-                                    return Ok(());
-                                }
-                                println!(
-                                    "{:<22}  {:<12}  {:<10}  DESCRIPTION",
-                                    "ID", "PROVIDER", "STATUS"
-                                );
-                                for t in &tasks {
-                                    println!(
-                                        "{:<22}  {:<12}  {:<10}  {}",
-                                        t.id, t.provider, t.status, t.description
-                                    );
-                                }
-                            }
-                            OutputFormat::Plain => {
-                                for t in &tasks {
-                                    println!(
-                                        "{}\t{}\t{}\t{}",
-                                        t.id, t.provider, t.status, t.description
-                                    );
-                                }
-                            }
-                            OutputFormat::Json => {
-                                println!("{}", serde_json::to_string(&tasks)?);
-                            }
-                        }
-                    }
-                    TaskCommand::Logs { id, follow } => {
-                        if follow {
-                            follow_task_logs(&client, &id).await?;
-                        } else {
-                            let log_path = paths::task_log_path(&id)?;
-                            if !log_path.exists() {
-                                anyhow::bail!("no logs found for task {id}");
-                            }
-                            let contents = std::fs::read_to_string(&log_path)?;
-                            print!("{contents}");
-                        }
-                    }
-                    TaskCommand::Exec { id, command, args } => {
-                        exec_task_command(&client, &id, &command, &args).await?;
-                    }
-                },
+                Command::Task { command } => handle_task_command(&client, &config, command).await?,
+                Command::New {
+                    description,
+                    project,
+                    provider,
+                    env_provider,
+                    attach,
+                    format,
+                } => {
+                    handle_task_command(
+                        &client,
+                        &config,
+                        TaskCommand::New {
+                            description,
+                            project,
+                            provider,
+                            env_provider,
+                            attach,
+                            format,
+                        },
+                    )
+                    .await?;
+                }
+                Command::Remove { id, skip_provider } => {
+                    handle_task_command(
+                        &client,
+                        &config,
+                        TaskCommand::Remove { id, skip_provider },
+                    )
+                    .await?;
+                }
+                Command::List { format } => {
+                    handle_task_command(&client, &config, TaskCommand::List { format }).await?;
+                }
+                Command::Logs { id, follow } => {
+                    handle_task_command(&client, &config, TaskCommand::Logs { id, follow }).await?;
+                }
+                Command::Exec { id, command, args } => {
+                    handle_task_command(&client, &config, TaskCommand::Exec { id, command, args })
+                        .await?;
+                }
                 Command::Tui => tui::run(client).await?,
                 Command::Config { .. }
                 | Command::Daemon { .. }

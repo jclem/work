@@ -62,14 +62,14 @@ pub enum DetailView {
 }
 
 pub enum Confirm {
-    DeleteTask {
+    Task {
         task_id: String,
         skip_provider: bool,
     },
-    DeleteProject {
+    Project {
         project_name: String,
     },
-    DeleteEnvironment {
+    Environment {
         env_id: String,
         skip_provider: bool,
     },
@@ -563,7 +563,7 @@ impl App {
         match self.tab {
             Tab::Tasks => {
                 if let Some(ti) = self.selected_task_index() {
-                    self.confirm = Some(Confirm::DeleteTask {
+                    self.confirm = Some(Confirm::Task {
                         task_id: self.tasks[ti].id.clone(),
                         skip_provider,
                     });
@@ -571,14 +571,14 @@ impl App {
             }
             Tab::Projects => {
                 if let Some(project) = self.projects.get(self.selected) {
-                    self.confirm = Some(Confirm::DeleteProject {
+                    self.confirm = Some(Confirm::Project {
                         project_name: project.name.clone(),
                     });
                 }
             }
             Tab::Environments => {
                 if let Some(env) = self.environments.get(self.selected) {
-                    self.confirm = Some(Confirm::DeleteEnvironment {
+                    self.confirm = Some(Confirm::Environment {
                         env_id: env.id.clone(),
                         skip_provider,
                     });
@@ -590,7 +590,7 @@ impl App {
 
     pub async fn confirm_delete(&mut self, client: &DaemonClient) {
         match &self.confirm {
-            Some(Confirm::DeleteTask {
+            Some(Confirm::Task {
                 task_id,
                 skip_provider,
             }) => {
@@ -600,14 +600,14 @@ impl App {
                     Err(e) => self.error = Some(format!("delete failed: {e}")),
                 }
             }
-            Some(Confirm::DeleteProject { project_name }) => {
+            Some(Confirm::Project { project_name }) => {
                 let name = project_name.clone();
                 match client.delete_project(&name).await {
                     Ok(()) => self.error = None,
                     Err(e) => self.error = Some(format!("delete failed: {e}")),
                 }
             }
-            Some(Confirm::DeleteEnvironment {
+            Some(Confirm::Environment {
                 env_id,
                 skip_provider,
             }) => {
