@@ -428,7 +428,7 @@ args = ["-c", "true"]
 
 [environments.providers.failing]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),
@@ -570,7 +570,7 @@ esac
         format!(
             r#"[environments.providers.slow]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),
@@ -643,7 +643,7 @@ esac
         format!(
             r#"[environments.providers.logging]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),
@@ -751,7 +751,7 @@ esac
         format!(
             r#"[environments.providers.updatefail]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),
@@ -842,7 +842,7 @@ args = ["-c", "true"]
 
 [environments.providers.removefail]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),
@@ -1010,7 +1010,7 @@ esac
         format!(
             r#"[environments.providers.removefail]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),
@@ -1119,7 +1119,7 @@ args = ["-c", "true"]
 
 [environments.providers.removefail]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),
@@ -1274,7 +1274,7 @@ args = ["-c", "true"]
 
 [environments.providers.poolreuse]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),
@@ -1449,7 +1449,7 @@ esac
         format!(
             r#"[environments.providers.execable]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),
@@ -1558,7 +1558,7 @@ args = ["-c", "true"]
 
 [environments.providers.execable]
 type = "script"
-command = "{}"
+path = "{}"
 "#,
             provider_script.to_string_lossy()
         ),

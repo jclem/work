@@ -62,7 +62,7 @@ args = ["-p", "{task_description}"]
 
 [environments.providers.sandbox]
 type = "script"
-command = "/path/to/sandbox-provider.sh"
+path = "/path/to/sandbox-provider.sh"
 ```
 
 Project overrides are optional. When you omit `--provider` / `--env-provider`,

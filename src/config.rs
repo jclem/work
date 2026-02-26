@@ -51,7 +51,7 @@ pub struct ProjectConfig {
 #[serde(tag = "type")]
 pub enum EnvironmentProviderConfig {
     #[serde(rename = "script")]
-    Script { command: String },
+    Script { path: String },
 }
 
 impl Config {
@@ -101,7 +101,7 @@ pub fn load() -> anyhow::Result<Config> {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, EnvironmentProviderConfig};
 
     #[test]
     fn project_specific_defaults_override_global_defaults() {
@@ -187,4 +187,24 @@ default-environment-provider = "frontend-env"
             Some("frontend-env")
         );
     }
+
+    #[test]
+    fn environment_script_provider_uses_path_key() {
+        let config: Config = toml::from_str(
+            r#"
+[environments.providers.sandbox]
+type = "script"
+path = "/tmp/sandbox-provider.sh"
+"#,
+        )
+        .unwrap();
+
+        let provider = config.get_environment_provider("sandbox").unwrap();
+        assert!(matches!(
+            provider,
+            EnvironmentProviderConfig::Script { path }
+            if path == "/tmp/sandbox-provider.sh"
+        ));
+    }
+
 }
